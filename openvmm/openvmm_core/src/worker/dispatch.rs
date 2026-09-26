@@ -2535,6 +2535,12 @@ impl InitializedVm {
                 LoadMode::Linux {
                     boot_mode: openvmm_defs::config::LinuxDirectBootMode::DeviceTree,
                     ..
+                }
+                // The MP-table microVM mode is x86-only and unreachable on
+                // aarch64; it exposes no ACPI tables.
+                | LoadMode::Linux {
+                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::MpTable,
+                    ..
                 } => false,
                 LoadMode::Linux {
                     boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,

@@ -400,7 +400,16 @@ impl LoadedVm {
             tsc_frequency_hz,
             apic_frequency_hz,
             capture_wall_clock,
-            cpu_contract: mesh::payload::encode(self.inner.partition.cpu_compatibility_contract()),
+            cpu_contract: {
+                #[cfg(guest_arch = "x86_64")]
+                {
+                    mesh::payload::encode(self.inner.partition.cpu_compatibility_contract())
+                }
+                #[cfg(not(guest_arch = "x86_64"))]
+                {
+                    Vec::new()
+                }
+            },
         })
     }
 
