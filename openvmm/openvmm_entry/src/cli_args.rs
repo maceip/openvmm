@@ -859,8 +859,8 @@ options:
     )]
     pub virtio_vsock_vhost_cid: Option<u32>,
 
-    /// expose a virtio network with the given backend (dio | vmnic | tap |
-    /// none)
+    /// expose a virtio network with the given backend (consomme | dio |
+    /// vmnic | tap | none)
     ///
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
     /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to

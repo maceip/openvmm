@@ -1885,6 +1885,10 @@ async fn vm_config_from_command_line(
                 port_name: pcie_port.clone(),
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
+        } else if cfg!(target_os = "macos") {
+            // NVX macOS port: HVF/aarch64 has no PCI INT#A routing (and no
+            // VMBus guest drivers for VPCI), so attach virtio-net over MMIO.
+            add_virtio_device(VirtioBusCli::Mmio, resource);
         } else {
             add_virtio_device(VirtioBusCli::Auto, resource);
         }

@@ -3472,6 +3472,8 @@ impl LoadedVmInner {
                                 self.vmbus_server.is_some(),
                                 &self.chipset_mmio,
                                 self.hypervisor_cfg.with_hv,
+                                self.virtio_mmio_region,
+                                self.virtio_mmio_irq,
                             )
                         })
                     })
@@ -4522,6 +4524,8 @@ fn add_devices_to_dsdt_arm64(
     with_vmbus: bool,
     chipset_mmio: &ChipsetMmioRanges,
     with_hv: bool,
+    virtio_mmio_region: MemoryRange,
+    virtio_mmio_irq: u32,
 ) {
     // VMBus GIC INTID (PPI 2 = INTID 16 + 2 = 18), matching the DT path.
     const VMBUS_INTID: u32 = openvmm_defs::config::DEFAULT_VMBUS_PPI;
@@ -4559,6 +4563,30 @@ fn add_devices_to_dsdt_arm64(
             PL011_SERIAL_SIZE,
             PL011_SERIAL1_GSIV,
         );
+    }
+
+    // Virtio-mmio devices are allocated as a contiguous region by the memory
+    // layout resolver. Each 4 KiB slot is a separate device; the guest probes
+    // every slot and ignores ones with no device. Unlike x86 GSIs, ARM DSDT
+    // interrupt descriptors carry the GIC INTID, which is the chipset line
+    // number biased by 32 (SPI 0 = INTID 32).
+    for i in 0..virtio_mmio_region.page_count_4k() {
+        let slot_base = virtio_mmio_region.start() + i * HV_PAGE_SIZE;
+        let mut device = dsdt::Device::new(format!("\\_SB.VI{i:02}").as_bytes());
+        device.add_object(&dsdt::NamedString::new(b"_HID", b"LNRO0005"));
+        device.add_object(&dsdt::NamedInteger::new(b"_UID", i));
+        // Report the device as cache-coherent: without _CCA, arm64 ACPI
+        // leaves the platform device with no DMA mask, so the virtio probe
+        // fails when allocating its queues. The HVF mapping is 1:1, so no
+        // _DMA translation object is needed.
+        device.add_object(&dsdt::NamedInteger::new(b"_CCA", 1));
+        let mut crs = dsdt::CurrentResourceSettings::new();
+        crs.add_resource(&dsdt::QwordMemory::new(slot_base, HV_PAGE_SIZE));
+        let mut intr = dsdt::Interrupt::new(virtio_mmio_irq + 32);
+        intr.is_edge_triggered = false;
+        crs.add_resource(&intr);
+        device.add_object(&crs);
+        dsdt.add_object(&device);
     }
 }
 
