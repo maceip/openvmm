@@ -60,6 +60,17 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
                 .set_cidr(cidr)
                 .map_err(ResolveConsommeError::InvalidCidr)?;
         }
+        // NVX macOS port: these handle overrides were accepted but never
+        // applied, so CLI options like `gwloopback` had no effect.
+        if let Some(allow) = resource.allow_host_local_access {
+            state.allow_host_local_access = allow;
+        }
+        if let Some(map) = resource.map_gateway_to_host_loopback {
+            state.map_gateway_to_host_loopback = map;
+        }
+        if let Some(port) = resource.gateway_loopback_proxy_port {
+            state.gateway_loopback_proxy_port = Some(port);
+        }
         let port_forwards: Vec<PortForwardConfig> = resource
             .ports
             .into_iter()

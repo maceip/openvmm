@@ -625,6 +625,9 @@ options:
     ///   --net consomme:hostfwd=tcp:127.0.0.1:8080-:80
     ///   --net consomme:hostfwd=tcp:\[::1\]:8080-:80
     ///   --net consomme:10.0.0.0/24,hostfwd=tcp::22-:22,hostfwd=udp::5000-:5000
+    ///
+    /// Append `gwloopback` to translate guest traffic for the gateway address
+    /// onto host loopback (lets the guest reach host-local TCP/UDP servers).
     #[clap(long)]
     pub net: Vec<NicConfigCli>,
 
@@ -2835,6 +2838,7 @@ pub enum EndpointConfigCli {
     Consomme {
         cidr: Option<String>,
         host_fwd: Vec<HostPortConfigCli>,
+        gateway_loopback: bool,
     },
     Dio {
         id: Option<String>,
@@ -2946,16 +2950,23 @@ impl FromStr for EndpointConfigCli {
                 let remaining = rest.join(":");
                 let mut cidr = None;
                 let mut host_fwd = Vec::new();
+                let mut gateway_loopback = false;
                 for opt in remaining.split(',').filter(|s| !s.is_empty()) {
                     if let Some(fwd) = opt.strip_prefix("hostfwd=") {
                         host_fwd.push(parse_hostfwd(fwd)?);
+                    } else if opt == "gwloopback" {
+                        gateway_loopback = true;
                     } else if cidr.is_none() {
                         cidr = Some(opt.to_owned());
                     } else {
                         return Err(format!("unexpected consomme option '{opt}'"));
                     }
                 }
-                EndpointConfigCli::Consomme { cidr, host_fwd }
+                EndpointConfigCli::Consomme {
+                    cidr,
+                    host_fwd,
+                    gateway_loopback,
+                }
             }
             ["dio", s @ ..] => EndpointConfigCli::Dio {
                 id: s.first().map(|s| (*s).to_owned()),
@@ -4245,7 +4256,11 @@ mod tests {
             EndpointConfigCli::Consomme {
                 cidr: None,
                 host_fwd,
-            } => assert!(host_fwd.is_empty()),
+                gateway_loopback,
+            } => {
+                assert!(host_fwd.is_empty());
+                assert!(!gateway_loopback);
+            }
             _ => panic!("Expected Consomme variant without cidr"),
         }
 
@@ -4254,16 +4269,32 @@ mod tests {
             EndpointConfigCli::Consomme {
                 cidr: Some(cidr),
                 host_fwd,
+                gateway_loopback,
             } => {
                 assert_eq!(cidr, "192.168.0.0/24");
                 assert!(host_fwd.is_empty());
+                assert!(!gateway_loopback);
             }
             _ => panic!("Expected Consomme variant with cidr"),
         }
 
+        // Test consomme with gateway loopback mapping
+        match EndpointConfigCli::from_str("consomme:192.168.0.0/24,gwloopback").unwrap() {
+            EndpointConfigCli::Consomme {
+                cidr,
+                host_fwd,
+                gateway_loopback,
+            } => {
+                assert_eq!(cidr, Some("192.168.0.0/24".to_owned()));
+                assert!(host_fwd.is_empty());
+                assert!(gateway_loopback);
+            }
+            _ => panic!("Expected Consomme variant with gwloopback"),
+        }
+
         // Test consomme with hostfwd
         match EndpointConfigCli::from_str("consomme:hostfwd=udp:127.0.0.1:5000-:5000").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Udp);
@@ -4279,7 +4310,7 @@ mod tests {
 
         // Test consomme with cidr and hostfwd
         match EndpointConfigCli::from_str("consomme:10.0.0.0/24,hostfwd=tcp::2222-:22").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false } => {
                 assert_eq!(cidr.as_deref(), Some("10.0.0.0/24"));
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4293,7 +4324,7 @@ mod tests {
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::2222-:22,hostfwd=tcp::3389-:3389")
             .unwrap()
         {
-            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 2);
                 assert_eq!(host_fwd[0].host_port, 2222);
@@ -4306,7 +4337,7 @@ mod tests {
 
         // Test consomme with different host and guest ports
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp:127.0.0.1:8080-:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4322,7 +4353,7 @@ mod tests {
 
         // Test consomme with guest address (accepted but ignored by backend)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::8080-10.0.0.2:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd[0].host_port, 8080);
                 assert_eq!(host_fwd[0].guest_port, 80);
@@ -4332,7 +4363,7 @@ mod tests {
 
         // Test consomme with IPv6 host address (bracketed)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp:[::1]:8080-:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4348,7 +4379,7 @@ mod tests {
 
         // Test consomme with IPv6 guest address (bracketed)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::8080-[::1]:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd[0].host_port, 8080);
                 assert_eq!(host_fwd[0].guest_port, 80);

@@ -835,6 +835,7 @@ async fn vm_config_from_command_line(
                 endpoint: EndpointConfigCli::Consomme {
                     cidr: None,
                     host_fwd: Vec::new(),
+                    gateway_loopback: false,
                 },
                 max_queues: None,
                 underhill: false,
@@ -2335,7 +2336,11 @@ fn parse_endpoint(
 ) -> anyhow::Result<NicConfig> {
     let _ = resources;
     let endpoint = match &cli_cfg.endpoint {
-        EndpointConfigCli::Consomme { cidr, host_fwd } => {
+        EndpointConfigCli::Consomme {
+            cidr,
+            host_fwd,
+            gateway_loopback,
+        } => {
             let ports = host_fwd
                 .iter()
                 .map(|fwd| {
@@ -2369,7 +2374,11 @@ fn parse_endpoint(
                 ports,
                 recv,
                 allow_host_local_access: None,
-                map_gateway_to_host_loopback: None,
+                map_gateway_to_host_loopback: if *gateway_loopback {
+                    Some(true)
+                } else {
+                    None
+                },
                 gateway_loopback_proxy_port: None,
             }
             .into_resource()
