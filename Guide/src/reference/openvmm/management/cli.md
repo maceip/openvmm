@@ -206,6 +206,18 @@ describes the source definitions.
   same device, hard-link aliases, symlinks, junctions, and bind-mount aliases
   cannot re-expose it.
 
+  `--mount-owner <process|caller>` selects the host identity that performs
+  guest requests. `process`, the default, performs every request as the
+  OpenVMM process. `caller` performs each request as the guest caller's UID
+  and GID, maps guest UID and GID 0 to the owner of the export root, and
+  drops OpenVMM's supplementary groups and effective capabilities for the
+  request, so guest-created files are owned by the guest user rather than by
+  OpenVMM. It is Linux-only and
+  requires an export root owned by a non-root user and group, and OpenVMM
+  running as that owner or holding `CAP_SETUID` and `CAP_SETGID`; a request
+  that cannot run as its caller fails with `EPERM`. The owner mode is host
+  policy rather than snapshot state, so a restore selects it again.
+
   Filesystem snapshots contain guest-visible FUSE and queue state, not host
   directory contents or native handles. An active snapshot requires
   `--mount` again with the exact canonical host path, guest target, access

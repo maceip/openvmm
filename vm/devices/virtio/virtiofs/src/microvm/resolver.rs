@@ -33,6 +33,7 @@ pub(crate) fn resolve(
             root_identity,
             read_only,
             denied_paths,
+            owner,
         } => {
             anyhow::ensure!(
                 resource.tag == MICROVM_MOUNT_TAG,
@@ -50,13 +51,14 @@ pub(crate) fn resolve(
                 mount_options.is_empty(),
                 "microVM virtio-fs does not accept HostFs mount options"
             );
-            VirtioFsDevice::new_microvm_hostfs(
+            VirtioFsDevice::new_microvm_hostfs_with_owner(
                 driver_source,
                 stable_id.clone(),
                 root_identity.clone(),
                 *read_only,
                 denied_paths.clone(),
                 root_path,
+                *owner,
                 None,
             )?
         }
@@ -75,6 +77,7 @@ mod tests {
     use virtio::resolve::ResolvedVirtioDevice;
     use virtio::resolve::VirtioResolveInput;
     use virtio_resources::fs::VirtioFsAggregateChild;
+    use virtio_resources::fs::microvm::VirtioFsOwner;
     use vm_resource::ResolveResource;
     use vmcore::vm_task::SingleDriverBackend;
 
@@ -82,6 +85,15 @@ mod tests {
         driver: DefaultDriver,
         tag: &str,
         fs: VirtioFsBackend,
+    ) -> anyhow::Result<ResolvedVirtioDevice> {
+        resolve_with_owner(driver, tag, fs, VirtioFsOwner::Process)
+    }
+
+    fn resolve_with_owner(
+        driver: DefaultDriver,
+        tag: &str,
+        fs: VirtioFsBackend,
+        owner: VirtioFsOwner,
     ) -> anyhow::Result<ResolvedVirtioDevice> {
         let root_path = match &fs {
             VirtioFsBackend::HostFs { root_path, .. } => Some(root_path),
@@ -101,12 +113,41 @@ mod tests {
                     root_identity,
                     read_only: true,
                     denied_paths: Vec::new(),
+                    owner,
                 },
             },
             VirtioResolveInput {
                 driver_source: &driver_source,
             },
         )
+    }
+
+    fn host_backend(root: &std::path::Path) -> VirtioFsBackend {
+        VirtioFsBackend::HostFs {
+            root_path: root.to_string_lossy().into_owned(),
+            mount_options: String::new(),
+        }
+    }
+
+    #[async_test]
+    async fn microvm_profile_resolves_caller_owner_only_on_linux(driver: DefaultDriver) {
+        let root = tempfile::tempdir().unwrap();
+        let result = resolve_with_owner(
+            driver,
+            MICROVM_MOUNT_TAG,
+            host_backend(root.path()),
+            VirtioFsOwner::Caller,
+        );
+        if cfg!(unix) {
+            // The temporary directory is owned by the test user, so the only
+            // failure mode is a root-owned export when the tests run as root.
+            if let Err(error) = result {
+                assert!(error.to_string().contains("non-root user"), "{error:#}");
+            }
+        } else {
+            let error = result.err().expect("caller owner resolved on Windows");
+            assert!(error.to_string().contains("Linux host"), "{error:#}");
+        }
     }
 
     #[async_test]

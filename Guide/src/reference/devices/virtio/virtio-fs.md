@@ -62,6 +62,61 @@ nested-mount crossings before opening the device.
 `SectionFs`, aggregate roots, alternate tags, PCI transport, DAX, and extra
 queues are not part of the microVM profile.
 
+## Host identity
+
+By default, OpenVMM performs every guest request as its own process
+identity, and the Linux backend ignores the guest caller. Guest-created files
+are therefore owned by the OpenVMM user on the host, and the guest kernel
+checks access against those host owners and modes. A privileged OpenVMM
+process performs these requests with all of its capabilities.
+
+On Linux, `--mount-owner caller` instead performs each request as the UID and
+GID in its FUSE header:
+
+```bash
+openvmm --machine microvm \
+  --mount /workspace,path/to/workspace,rw \
+  --mount-owner caller \
+  --kernel path/to/vmlinux --initrd path/to/initramfs.cpio.gz
+```
+
+- Around each request, the worker thread switches its filesystem UID and GID,
+  clears its supplementary groups, and drops its effective capabilities. It
+  restores all of them afterwards. The host kernel therefore checks every
+  operation as the caller alone, and new objects are owned by the caller. A
+  request cannot use OpenVMM's own privileges, such as `CAP_SETFCAP` for file
+  capabilities or `CAP_SYS_ADMIN` for `trusted.*` attributes.
+- Guest UID 0 and GID 0 are mapped to the owner of the export root, so a
+  guest never performs host operations as root. OpenVMM rejects an export root
+  owned by UID 0 or GID 0.
+- Changing to another identity requires `CAP_SETUID` and `CAP_SETGID`. If
+  OpenVMM runs as the export owner without those capabilities, only requests
+  from that identity, including guest root, succeed, and those requests keep
+  OpenVMM's supplementary groups because they cannot be dropped without
+  `CAP_SETGID`. OpenVMM verifies at launch that it can act as the export
+  owner. A request that cannot run as its caller fails with `EPERM` instead of
+  running as OpenVMM.
+- The guest supplies the caller identity, so any guest root process can act
+  as any non-root host user inside the export. Grant the capabilities only when
+  the export contains no files that other host users rely on.
+- A process that holds only `CAP_SETUID` and `CAP_SETGID` can also change its
+  real identity. Embedders that sandbox OpenVMM should permit `setfsuid`,
+  `setfsgid`, `setgroups`, `capget`, and `capset` while denying the other
+  identity-changing system calls.
+- Supplementary groups of the guest caller are not propagated.
+- Forget requests only release guest references and keep the process
+  identity. Snapshot capture and restore revalidate and reopen saved objects as
+  the OpenVMM process.
+
+Windows HostFs has no per-caller identity switch and rejects `caller`. Files
+are created by the OpenVMM user, and the guest sees attributes derived from
+that user's access. The owner mode is host policy rather than snapshot state,
+so a restore selects it again.
+
+Guest symbolic-link creation returns `ENOTSUP` in the microVM profile,
+whatever the owner mode: the generic `LxVolume` path walk cannot pin every
+ancestor, so a guest-created link could later redirect a checked lookup.
+
 ## Snapshot attachments
 
 A microVM snapshot stores FUSE negotiation, namespace identifiers, lookup
