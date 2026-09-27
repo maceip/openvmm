@@ -14,6 +14,7 @@ memory_range = { workspace = true, features = ["inspect"] }
 vm_topology = { workspace = true, features = ["inspect"] }
 guestmem.workspace = true
 vmcore.workspace = true
+virt_support_gic.workspace = true
 x86defs.workspace = true
 
 inspect.workspace = true

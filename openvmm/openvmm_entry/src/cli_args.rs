@@ -628,6 +628,11 @@ options:
     ///
     /// Append `gwloopback` to translate guest traffic for the gateway address
     /// onto host loopback (lets the guest reach host-local TCP/UDP servers).
+    ///
+    /// Append `snapshot` to make the NIC snapshot-capable: the guest gets a
+    /// deterministic MAC/IP identity derived from the CIDR (required) and the
+    /// device enables save/restore. Saving still requires file-backed guest
+    /// RAM (`--memory ...,file=<path>`).
     #[clap(long)]
     pub net: Vec<NicConfigCli>,
 
@@ -2839,6 +2844,7 @@ pub enum EndpointConfigCli {
         cidr: Option<String>,
         host_fwd: Vec<HostPortConfigCli>,
         gateway_loopback: bool,
+        snapshot: bool,
     },
     Dio {
         id: Option<String>,
@@ -2951,11 +2957,14 @@ impl FromStr for EndpointConfigCli {
                 let mut cidr = None;
                 let mut host_fwd = Vec::new();
                 let mut gateway_loopback = false;
+                let mut snapshot = false;
                 for opt in remaining.split(',').filter(|s| !s.is_empty()) {
                     if let Some(fwd) = opt.strip_prefix("hostfwd=") {
                         host_fwd.push(parse_hostfwd(fwd)?);
                     } else if opt == "gwloopback" {
                         gateway_loopback = true;
+                    } else if opt == "snapshot" {
+                        snapshot = true;
                     } else if cidr.is_none() {
                         cidr = Some(opt.to_owned());
                     } else {
@@ -2966,6 +2975,7 @@ impl FromStr for EndpointConfigCli {
                     cidr,
                     host_fwd,
                     gateway_loopback,
+                    snapshot,
                 }
             }
             ["dio", s @ ..] => EndpointConfigCli::Dio {
@@ -4257,9 +4267,11 @@ mod tests {
                 cidr: None,
                 host_fwd,
                 gateway_loopback,
+                snapshot,
             } => {
                 assert!(host_fwd.is_empty());
                 assert!(!gateway_loopback);
+                assert!(!snapshot);
             }
             _ => panic!("Expected Consomme variant without cidr"),
         }
@@ -4270,10 +4282,12 @@ mod tests {
                 cidr: Some(cidr),
                 host_fwd,
                 gateway_loopback,
+                snapshot,
             } => {
                 assert_eq!(cidr, "192.168.0.0/24");
                 assert!(host_fwd.is_empty());
                 assert!(!gateway_loopback);
+                assert!(!snapshot);
             }
             _ => panic!("Expected Consomme variant with cidr"),
         }
@@ -4284,17 +4298,35 @@ mod tests {
                 cidr,
                 host_fwd,
                 gateway_loopback,
+                snapshot,
             } => {
                 assert_eq!(cidr, Some("192.168.0.0/24".to_owned()));
                 assert!(host_fwd.is_empty());
                 assert!(gateway_loopback);
+                assert!(!snapshot);
             }
             _ => panic!("Expected Consomme variant with gwloopback"),
         }
 
+        // Test consomme with snapshot-capable NIC
+        match EndpointConfigCli::from_str("consomme:192.168.0.0/24,gwloopback,snapshot").unwrap() {
+            EndpointConfigCli::Consomme {
+                cidr,
+                host_fwd,
+                gateway_loopback,
+                snapshot,
+            } => {
+                assert_eq!(cidr, Some("192.168.0.0/24".to_owned()));
+                assert!(host_fwd.is_empty());
+                assert!(gateway_loopback);
+                assert!(snapshot);
+            }
+            _ => panic!("Expected Consomme variant with snapshot"),
+        }
+
         // Test consomme with hostfwd
         match EndpointConfigCli::from_str("consomme:hostfwd=udp:127.0.0.1:5000-:5000").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Udp);
@@ -4310,7 +4342,7 @@ mod tests {
 
         // Test consomme with cidr and hostfwd
         match EndpointConfigCli::from_str("consomme:10.0.0.0/24,hostfwd=tcp::2222-:22").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false } => {
                 assert_eq!(cidr.as_deref(), Some("10.0.0.0/24"));
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4324,7 +4356,7 @@ mod tests {
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::2222-:22,hostfwd=tcp::3389-:3389")
             .unwrap()
         {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 2);
                 assert_eq!(host_fwd[0].host_port, 2222);
@@ -4337,7 +4369,7 @@ mod tests {
 
         // Test consomme with different host and guest ports
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp:127.0.0.1:8080-:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4353,7 +4385,7 @@ mod tests {
 
         // Test consomme with guest address (accepted but ignored by backend)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::8080-10.0.0.2:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd[0].host_port, 8080);
                 assert_eq!(host_fwd[0].guest_port, 80);
@@ -4363,7 +4395,7 @@ mod tests {
 
         // Test consomme with IPv6 host address (bracketed)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp:[::1]:8080-:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4379,7 +4411,7 @@ mod tests {
 
         // Test consomme with IPv6 guest address (bracketed)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::8080-[::1]:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd[0].host_port, 8080);
                 assert_eq!(host_fwd[0].guest_port, 80);

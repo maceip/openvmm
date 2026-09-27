@@ -200,6 +200,13 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
                 // Apple Silicon does not support aarch32.
                 supports_aarch32_el0: false,
                 vendor: Vendor::ARM,
+                // Must match the `max_spis` passed to `Distributor::new`
+                // below; it sizes the distributor save/restore vectors.
+                gic_max_spis: 256,
+                // CNTV_CTL_EL0/CNTV_CVAL_EL0 are captured per VP.
+                virtual_timer_save: true,
+                // SPSR_EL1 and the TPIDR thread registers are captured per VP.
+                extended_system_registers_save: true,
             },
             virt_timer_ppi: self.config.processor_topology.virt_timer_ppi(),
             vps: self
@@ -510,6 +517,18 @@ impl AccessVmState for HvfPartitionStateAccess<'_> {
     }
 
     fn commit(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn distributor(&mut self) -> Result<virt::aarch64::SavedDistributorState, Self::Error> {
+        Ok(self.partition.gicd.save())
+    }
+
+    fn set_distributor(
+        &mut self,
+        value: &virt::aarch64::SavedDistributorState,
+    ) -> Result<(), Self::Error> {
+        self.partition.gicd.restore(value)?;
         Ok(())
     }
 }
@@ -1237,7 +1256,6 @@ impl<'p> Processor for HvfProcessor<'p> {
             unsafe { abi::hv_vcpu_run(self.vcpu.vcpu) }
                 .chk()
                 .map_err(|err| dev.fatal_error(err.into()))?;
-
             match self.vcpu.exit.reason {
                 abi::HvExitReason::CANCELED => {
                     continue;

@@ -330,6 +330,8 @@ impl VmController {
                     .map(crate::cli_args::microvm::SnapshotTierCli::restore_policy)
                     .unwrap_or_default()
                     .to_owned(),
+                // microVM captures never come from a Linux-direct boot.
+                linux_direct_boot: false,
                 consumed_config_sections: match self.microvm.snapshot_tier {
                     Some(crate::cli_args::microvm::SnapshotTierCli::Platform) => {
                         openvmm_helpers::snapshot::format::SNAPSHOT_CONFIG_INVARIANTS

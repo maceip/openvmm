@@ -2038,6 +2038,10 @@ impl<'a> UhProtoPartition<'a> {
             isolation: params.isolation,
             vendor: Vendor::ARM,
             supports_aarch32_el0: false,
+            // GIC state save/restore is not implemented for this backend.
+            gic_max_spis: 0,
+            virtual_timer_save: false,
+            extended_system_registers_save: false,
         };
 
         #[cfg(guest_arch = "x86_64")]

@@ -67,6 +67,7 @@ use mesh::CancelContext;
 use mesh::CellUpdater;
 use mesh::rpc::RpcSend;
 use meshworker::VmmMesh;
+use net_backend_resources::consomme::static_ipv4::StaticIpv4Config;
 use net_backend_resources::mac_address::MacAddress;
 use nvme_resources::NvmeControllerRequest;
 use openvmm_defs::config::Config;
@@ -836,6 +837,7 @@ async fn vm_config_from_command_line(
                     cidr: None,
                     host_fwd: Vec::new(),
                     gateway_loopback: false,
+                    snapshot: false,
                 },
                 max_queues: None,
                 underhill: false,
@@ -1378,7 +1380,12 @@ async fn vm_config_from_command_line(
         // Snapshot restore: skip firmware loading entirely. Device state and
         // memory come from the snapshot directory.
         load_mode = LoadMode::None;
-        with_hv = true;
+        // Restore must reconstruct the save-time machine exactly (state-unit
+        // inventory is matched by name), so mirror the Linux-direct default
+        // rather than forcing enlightenments on: a snapshot saved without
+        // `--hv` restores without it, and one saved with `--hv` needs `--hv`
+        // on restore too.
+        with_hv = opt.hv;
     } else if let Some(path) = &opt.igvm {
         let file = fs_err::File::open(path)
             .context("failed to open igvm file")?
@@ -1871,13 +1878,17 @@ async fn vm_config_from_command_line(
             anyhow::bail!("use --net uh:[...] to add underhill NICs")
         }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
+        // A derived static identity means the NIC was marked snapshot-capable
+        // (`,snapshot`); enable device save/restore with the device-computed
+        // effective feature contract.
+        let save_restore = vport.static_ipv4.is_some();
         let resource = virtio_resources::net::VirtioNetHandle {
             max_queues: vport.max_queues,
             mac_address: vport.mac_address,
             endpoint: vport.endpoint,
             egress_policy: None,
-            save_restore: false,
-            static_ipv4: None,
+            save_restore,
+            static_ipv4: vport.static_ipv4,
             effective_features: None,
         }
         .into_resource();
@@ -2329,17 +2340,84 @@ fn new_switch_port(
     Ok((id, port))
 }
 
+/// Derives the deterministic guest identity for a snapshot-capable consomme
+/// NIC from its CIDR.
+///
+/// Mirrors the consomme backend's CIDR addressing (gateway is network+1, the
+/// guest is network+2) with QEMU-style MACs derived from the IPs, matching
+/// the canonical identity that virtio-net save/restore validation requires.
+fn consomme_snapshot_identity(cidr: &str) -> anyhow::Result<(MacAddress, StaticIpv4Config)> {
+    fn derived_mac(addr: std::net::Ipv4Addr) -> MacAddress {
+        let [_, b1, b2, b3] = addr.octets();
+        MacAddress::new([0x52, 0x54, 0x00, b1, b2, b3])
+    }
+
+    let (ip, prefix) = cidr
+        .split_once('/')
+        .context("consomme CIDR must be in address/prefix form")?;
+    let ip: std::net::Ipv4Addr = ip
+        .parse()
+        .with_context(|| format!("invalid IPv4 address in consomme CIDR '{cidr}'"))?;
+    let prefix: u8 = prefix
+        .parse()
+        .with_context(|| format!("invalid prefix length in consomme CIDR '{cidr}'"))?;
+    if !(1..=30).contains(&prefix) {
+        bail!("consomme CIDR '{cidr}' cannot host a snapshot identity (need a prefix of 1-30)");
+    }
+    let mask = u32::MAX << (32 - prefix);
+    let network = u32::from(ip) & mask;
+    let gateway = network
+        .checked_add(1)
+        .context("consomme CIDR gateway address overflows")?;
+    let guest = network
+        .checked_add(2)
+        .context("consomme CIDR guest address overflows")?;
+    if guest == network | !mask {
+        bail!("consomme CIDR '{cidr}' leaves no usable guest address");
+    }
+    let gateway_ipv4 = std::net::Ipv4Addr::from(gateway);
+    let guest_ipv4 = std::net::Ipv4Addr::from(guest);
+    Ok((
+        derived_mac(guest_ipv4),
+        StaticIpv4Config {
+            guest_ipv4,
+            prefix_length: prefix,
+            gateway_ipv4,
+            gateway_mac: derived_mac(gateway_ipv4),
+        },
+    ))
+}
+
 fn parse_endpoint(
     cli_cfg: &NicConfigCli,
     index: &mut usize,
     resources: &mut VmResources,
 ) -> anyhow::Result<NicConfig> {
     let _ = resources;
+    // Snapshot-capable NICs need their deterministic identity up front so the
+    // device MAC matches the static IPv4 contract recorded in saved state.
+    let snapshot_identity = match &cli_cfg.endpoint {
+        EndpointConfigCli::Consomme {
+            cidr: Some(cidr),
+            snapshot: true,
+            ..
+        } => Some(consomme_snapshot_identity(cidr).with_context(|| {
+            format!("invalid CIDR '{cidr}' for snapshot-capable NIC")
+        })?),
+        EndpointConfigCli::Consomme { snapshot: true, .. } => {
+            bail!(
+                "snapshot-capable consomme NICs require a CIDR \
+                 (e.g. consomme:192.168.127.0/24,snapshot)"
+            );
+        }
+        _ => None,
+    };
     let endpoint = match &cli_cfg.endpoint {
         EndpointConfigCli::Consomme {
             cidr,
             host_fwd,
             gateway_loopback,
+            ..
         } => {
             let ports = host_fwd
                 .iter()
@@ -2423,9 +2501,16 @@ fn parse_endpoint(
         }
     };
 
-    // Pick a random MAC address.
-    let mut mac_address = [0x00, 0x15, 0x5D, 0, 0, 0];
-    getrandom::fill(&mut mac_address[3..]).expect("rng failure");
+    // Snapshot-capable NICs use the derived MAC so the device identity matches
+    // the static IPv4 contract; otherwise pick a random MAC address.
+    let (mac_address, static_ipv4) = match snapshot_identity {
+        Some((mac, config)) => (mac, Some(config)),
+        None => {
+            let mut random = [0x00, 0x15, 0x5D, 0, 0, 0];
+            getrandom::fill(&mut random[3..]).expect("rng failure");
+            (random.into(), None)
+        }
+    };
 
     // Pick a fixed instance ID based on the index.
     const BASE_INSTANCE_ID: Guid = guid::guid!("00000000-da43-11ed-936a-00155d6db52f");
@@ -2439,9 +2524,10 @@ fn parse_endpoint(
         vtl: cli_cfg.vtl,
         instance_id,
         endpoint,
-        mac_address: mac_address.into(),
+        mac_address,
         max_queues: cli_cfg.max_queues,
         pcie_port: cli_cfg.pcie_port.clone(),
+        static_ipv4,
     })
 }
 
@@ -2453,6 +2539,7 @@ struct NicConfig {
     endpoint: Resource<NetEndpointHandleKind>,
     max_queues: Option<u16>,
     pcie_port: Option<String>,
+    static_ipv4: Option<StaticIpv4Config>,
 }
 
 impl NicConfig {
@@ -2785,6 +2872,7 @@ async fn run_control_inner(
 ) -> anyhow::Result<i32> {
     let mesh = mesh_slot.as_ref().unwrap();
     let mut restore = snapshot_restore::SnapshotRestore::open(&opt)?;
+    restore.normalize_memory_size(&mut opt)?;
     let microvm_restore = microvm::prepare_restore(&mut opt, restore.snapshot())?;
     let (mut vm_config, mut resources) =
         vm_config_from_command_line(driver, mesh, &opt, &microvm_restore).await?;
@@ -2924,6 +3012,10 @@ async fn run_control_inner(
         None => openvmm_helpers::hypervisor::choose_hypervisor()?,
     };
     let source_hypervisor = hypervisor.id().to_owned();
+    // The boot mode feeds the worker (restore rebuilds boot-mode-dependent
+    // layout from it) and the controller below (recorded in snapshot
+    // manifests for restore).
+    let linux_direct_boot = matches!(vm_config.load_mode, LoadMode::Linux { .. });
     let vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
@@ -2958,6 +3050,7 @@ async fn run_control_inner(
             snapshot_ready,
             snapshot_capture_enabled: microvm.snapshot_capture_enabled(),
             restore_downtime: restore.downtime,
+            restore_linux_direct_boot: restore.linux_direct_boot,
             restore_tsc_frequency_hz: restore.tsc_frequency_hz,
             restore_apic_frequency_hz: restore.apic_frequency_hz,
             restore_cpu_contract: restore.cpu_contract,
@@ -3026,6 +3119,7 @@ async fn run_control_inner(
         memory_backing_file: microvm.memory_backing_file(&opt),
         memory: opt.memory_size(),
         processors: opt.processors,
+        linux_direct_boot,
         log_file: opt.log_file.clone(),
         crash_dump_path: opt.crash_dump_path.clone(),
         microvm: microvm.into_controller(&opt, source_hypervisor, snapshot_requests),

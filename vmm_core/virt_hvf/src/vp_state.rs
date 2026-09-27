@@ -138,4 +138,95 @@ impl AccessVpState for HvfVpStateAccess<'_, '_> {
     ) -> Result<(), Self::Error> {
         self.set_register_state(value)
     }
+
+    fn redistributor(&mut self) -> Result<virt::aarch64::SavedRedistributorState, Self::Error> {
+        let vp = self.processor.inner.vp_info.base.vp_index;
+        Ok(self.processor.partition.gicd.save_redistributor(vp)?)
+    }
+
+    fn set_redistributor(
+        &mut self,
+        value: &virt::aarch64::SavedRedistributorState,
+    ) -> Result<(), Self::Error> {
+        let vp = self.processor.inner.vp_info.base.vp_index;
+        self.processor
+            .partition
+            .gicd
+            .restore_redistributor(vp, value)?;
+        Ok(())
+    }
+
+    fn virtual_timer(&mut self) -> Result<virt::aarch64::vp::VirtualTimerState, Self::Error> {
+        Ok(virt::aarch64::vp::VirtualTimerState {
+            ctl_el0: self.processor.vcpu.sys_reg(abi::HvSysReg::CNTV_CTL_EL0)?,
+            cval_el0: self.processor.vcpu.sys_reg(abi::HvSysReg::CNTV_CVAL_EL0)?,
+        })
+    }
+
+    fn set_virtual_timer(
+        &mut self,
+        value: &virt::aarch64::vp::VirtualTimerState,
+    ) -> Result<(), Self::Error> {
+        self.processor
+            .vcpu
+            .set_sys_reg(abi::HvSysReg::CNTV_CTL_EL0, value.ctl_el0)?;
+        self.processor
+            .vcpu
+            .set_sys_reg(abi::HvSysReg::CNTV_CVAL_EL0, value.cval_el0)?;
+        Ok(())
+    }
+
+    fn extended_system_registers(
+        &mut self,
+    ) -> Result<virt::aarch64::vp::ExtendedSystemRegisters, Self::Error> {
+        let vcpu = &self.processor.vcpu;
+        Ok(virt::aarch64::vp::ExtendedSystemRegisters {
+            spsr_el1: vcpu.sys_reg(abi::HvSysReg::SPSR_EL1)?,
+            tpidr_el0: vcpu.sys_reg(abi::HvSysReg::TPIDR_EL0)?,
+            tpidrro_el0: vcpu.sys_reg(abi::HvSysReg::TPIDRRO_EL0)?,
+            tpidr_el1: vcpu.sys_reg(abi::HvSysReg::TPIDR_EL1)?,
+            apdakeylo_el1: vcpu.sys_reg(abi::HvSysReg::APDAKEYLO_EL1)?,
+            apdakeyhi_el1: vcpu.sys_reg(abi::HvSysReg::APDAKEYHI_EL1)?,
+            apdbkeylo_el1: vcpu.sys_reg(abi::HvSysReg::APDBKEYLO_EL1)?,
+            apdbkeyhi_el1: vcpu.sys_reg(abi::HvSysReg::APDBKEYHI_EL1)?,
+            apiakeylo_el1: vcpu.sys_reg(abi::HvSysReg::APIAKEYLO_EL1)?,
+            apiakeyhi_el1: vcpu.sys_reg(abi::HvSysReg::APIAKEYHI_EL1)?,
+            apibkeylo_el1: vcpu.sys_reg(abi::HvSysReg::APIBKEYLO_EL1)?,
+            apibkeyhi_el1: vcpu.sys_reg(abi::HvSysReg::APIBKEYHI_EL1)?,
+            apgakeylo_el1: vcpu.sys_reg(abi::HvSysReg::APGAKEYLO_EL1)?,
+            apgakeyhi_el1: vcpu.sys_reg(abi::HvSysReg::APGAKEYHI_EL1)?,
+            fpcr: vcpu.reg(abi::HvReg::FPCR)?,
+            fpsr: vcpu.reg(abi::HvReg::FPSR)?,
+            cpacr_el1: vcpu.sys_reg(abi::HvSysReg::CPACR_EL1)?,
+            cntkctl_el1: vcpu.sys_reg(abi::HvSysReg::CNTKCTL_EL1)?,
+            contextidr_el1: vcpu.sys_reg(abi::HvSysReg::CONTEXTIDR_EL1)?,
+        })
+    }
+
+    fn set_extended_system_registers(
+        &mut self,
+        value: &virt::aarch64::vp::ExtendedSystemRegisters,
+    ) -> Result<(), Self::Error> {
+        let vcpu = &mut self.processor.vcpu;
+        vcpu.set_sys_reg(abi::HvSysReg::SPSR_EL1, value.spsr_el1)?;
+        vcpu.set_sys_reg(abi::HvSysReg::TPIDR_EL0, value.tpidr_el0)?;
+        vcpu.set_sys_reg(abi::HvSysReg::TPIDRRO_EL0, value.tpidrro_el0)?;
+        vcpu.set_sys_reg(abi::HvSysReg::TPIDR_EL1, value.tpidr_el1)?;
+        vcpu.set_sys_reg(abi::HvSysReg::APDAKEYLO_EL1, value.apdakeylo_el1)?;
+        vcpu.set_sys_reg(abi::HvSysReg::APDAKEYHI_EL1, value.apdakeyhi_el1)?;
+        vcpu.set_sys_reg(abi::HvSysReg::APDBKEYLO_EL1, value.apdbkeylo_el1)?;
+        vcpu.set_sys_reg(abi::HvSysReg::APDBKEYHI_EL1, value.apdbkeyhi_el1)?;
+        vcpu.set_sys_reg(abi::HvSysReg::APIAKEYLO_EL1, value.apiakeylo_el1)?;
+        vcpu.set_sys_reg(abi::HvSysReg::APIAKEYHI_EL1, value.apiakeyhi_el1)?;
+        vcpu.set_sys_reg(abi::HvSysReg::APIBKEYLO_EL1, value.apibkeylo_el1)?;
+        vcpu.set_sys_reg(abi::HvSysReg::APIBKEYHI_EL1, value.apibkeyhi_el1)?;
+        vcpu.set_sys_reg(abi::HvSysReg::APGAKEYLO_EL1, value.apgakeylo_el1)?;
+        vcpu.set_sys_reg(abi::HvSysReg::APGAKEYHI_EL1, value.apgakeyhi_el1)?;
+        vcpu.set_reg(abi::HvReg::FPCR, value.fpcr)?;
+        vcpu.set_reg(abi::HvReg::FPSR, value.fpsr)?;
+        vcpu.set_sys_reg(abi::HvSysReg::CPACR_EL1, value.cpacr_el1)?;
+        vcpu.set_sys_reg(abi::HvSysReg::CNTKCTL_EL1, value.cntkctl_el1)?;
+        vcpu.set_sys_reg(abi::HvSysReg::CONTEXTIDR_EL1, value.contextidr_el1)?;
+        Ok(())
+    }
 }

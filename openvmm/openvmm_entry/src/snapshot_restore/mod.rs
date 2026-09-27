@@ -48,6 +48,8 @@ pub(crate) struct SnapshotRestore {
 /// Restore inputs of the VM worker beyond its guest RAM and saved state.
 #[derive(Default)]
 pub(crate) struct WorkerRestore {
+    /// Whether the restored snapshot was captured from a Linux-direct boot.
+    pub(crate) linux_direct_boot: bool,
     /// Whether writes to the worker's guest RAM must remain private to this VM.
     pub(crate) shared_memory_copy_on_write: bool,
     /// Snapshot generation handles that must outlive the restored VM.
@@ -101,6 +103,30 @@ impl SnapshotRestore {
         self.snapshot.as_ref()
     }
 
+    /// Normalizes `--memory` size for a generic (non-microVM) restore from the
+    /// opened generation's manifest.
+    ///
+    /// A generic restore must rebuild the save-time memory layout exactly, and
+    /// the layout derives from the configured size: leaving `--memory` unset
+    /// would silently fall back to the 1GiB default and map guest RAM at the
+    /// wrong addresses. Default an unset size from the manifest, and reject an
+    /// explicit size that cannot match. microVM restores size memory through
+    /// their own contract and are untouched.
+    pub(crate) fn normalize_memory_size(&self, opt: &mut Options) -> anyhow::Result<()> {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return Ok(());
+        };
+        if opt.machine == crate::cli_args::microvm::MachineProfileCli::Microvm {
+            return Ok(());
+        }
+        let manifest_bytes = snapshot.manifest().memory_size_bytes;
+        opt.memory.size = Some(restore_memory_size(
+            opt.memory.size.map(|size| size.0),
+            manifest_bytes,
+        )?);
+        Ok(())
+    }
+
     /// Validates the opened snapshot generation against the VM configuration
     /// and prepares it for the VM worker.
     ///
@@ -122,6 +148,7 @@ impl SnapshotRestore {
         )?;
         self.worker.shared_memory_copy_on_write = true;
         self.worker.guards = Some(prepared.guards);
+        self.worker.linux_direct_boot = prepared.linux_direct_boot;
         if let Some((downtime, tsc_frequency_hz, apic_frequency_hz, cpu_contract)) =
             prepared.restore_time
         {
@@ -137,6 +164,47 @@ impl SnapshotRestore {
     /// is not restored, or those recorded by [`Self::prepare`].
     pub(crate) fn into_worker(self) -> WorkerRestore {
         self.worker
+    }
+}
+
+/// Resolves the `--memory` size for a generic restore: the manifest size when
+/// unset, else the explicit size after verifying it matches the manifest.
+fn restore_memory_size(
+    requested: Option<u64>,
+    manifest_bytes: u64,
+) -> anyhow::Result<vmm_cli::MemorySize> {
+    match requested {
+        None => Ok(vmm_cli::MemorySize(manifest_bytes)),
+        Some(size) => {
+            anyhow::ensure!(
+                size == manifest_bytes,
+                "explicit --memory size {size} does not match the snapshot's {manifest_bytes} bytes; \
+                 a generic restore must rebuild the save-time memory layout exactly"
+            );
+            Ok(vmm_cli::MemorySize(size))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::restore_memory_size;
+
+    #[test]
+    fn restore_memory_defaults_from_manifest() {
+        let size = restore_memory_size(None, 512 << 20).unwrap();
+        assert_eq!(size.0, 512 << 20);
+    }
+
+    #[test]
+    fn restore_memory_accepts_matching_size() {
+        let size = restore_memory_size(Some(512 << 20), 512 << 20).unwrap();
+        assert_eq!(size.0, 512 << 20);
+    }
+
+    #[test]
+    fn restore_memory_rejects_mismatch() {
+        restore_memory_size(Some(1 << 30), 512 << 20).unwrap_err();
     }
 }
 

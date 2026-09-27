@@ -1256,6 +1256,9 @@ impl VmService {
                         .restore_time
                         .as_ref()
                         .map(|(downtime, _, _, _)| *downtime),
+                    // The ttrpc restore flow does not currently convey the
+                    // save-time boot mode; fresh-boot layout rules apply.
+                    restore_linux_direct_boot: false,
                     restore_tsc_frequency_hz: worker_fields
                         .restore_time
                         .as_ref()
@@ -1303,6 +1306,9 @@ impl VmService {
             crash_dump_path: req_config.crash_dump_path.map(Into::into),
             microvm: controller_fields.microvm,
             guest_power_actions,
+            // The ttrpc launch flow never boots Linux directly; snapshots it
+            // captures record no Linux-direct boot mode.
+            linux_direct_boot: false,
         };
 
         // Spawn the controller task.

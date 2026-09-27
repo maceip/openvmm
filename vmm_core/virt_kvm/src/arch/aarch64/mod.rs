@@ -428,6 +428,41 @@ impl virt::vp::AccessVpState for &'_ mut KvmProcessor<'_> {
 
         Ok(())
     }
+
+    fn redistributor(&mut self) -> Result<virt::aarch64::SavedRedistributorState, Self::Error> {
+        Err(KvmError::NotSupported)
+    }
+
+    fn set_redistributor(
+        &mut self,
+        _value: &virt::aarch64::SavedRedistributorState,
+    ) -> Result<(), Self::Error> {
+        Err(KvmError::NotSupported)
+    }
+
+    fn virtual_timer(&mut self) -> Result<virt::aarch64::vp::VirtualTimerState, Self::Error> {
+        Err(KvmError::NotSupported)
+    }
+
+    fn set_virtual_timer(
+        &mut self,
+        _value: &virt::aarch64::vp::VirtualTimerState,
+    ) -> Result<(), Self::Error> {
+        Err(KvmError::NotSupported)
+    }
+
+    fn extended_system_registers(
+        &mut self,
+    ) -> Result<virt::aarch64::vp::ExtendedSystemRegisters, Self::Error> {
+        Err(KvmError::NotSupported)
+    }
+
+    fn set_extended_system_registers(
+        &mut self,
+        _value: &virt::aarch64::vp::ExtendedSystemRegisters,
+    ) -> Result<(), Self::Error> {
+        Err(KvmError::NotSupported)
+    }
 }
 
 impl virt::vm::AccessVmState for &KvmPartition {
@@ -438,6 +473,17 @@ impl virt::vm::AccessVmState for &KvmPartition {
     }
 
     fn commit(&mut self) -> Result<(), Self::Error> {
+        unimplemented!()
+    }
+
+    fn distributor(&mut self) -> Result<virt::aarch64::SavedDistributorState, Self::Error> {
+        unimplemented!()
+    }
+
+    fn set_distributor(
+        &mut self,
+        _value: &virt::aarch64::SavedDistributorState,
+    ) -> Result<(), Self::Error> {
         unimplemented!()
     }
 }
@@ -839,6 +885,10 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                 isolation: virt::IsolationType::None,
                 vendor: Vendor::ARM,
                 supports_aarch32_el0,
+                // GIC state save/restore is not implemented for this backend.
+                gic_max_spis: 0,
+                virtual_timer_save: false,
+                extended_system_registers_save: false,
             }
         };
 

@@ -925,6 +925,45 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedArm64> {
     fn set_system_registers(&mut self, value: &vp::SystemRegisters) -> Result<(), Self::Error> {
         self.set_system_registers(value)
     }
+
+    fn redistributor(&mut self) -> Result<virt::aarch64::SavedRedistributorState, Self::Error> {
+        Err(vp_state::Error::Unimplemented("GIC redistributor save"))
+    }
+
+    fn set_redistributor(
+        &mut self,
+        _value: &virt::aarch64::SavedRedistributorState,
+    ) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("GIC redistributor restore"))
+    }
+
+    fn virtual_timer(&mut self) -> Result<virt::aarch64::vp::VirtualTimerState, Self::Error> {
+        Err(vp_state::Error::Unimplemented("virtual timer save"))
+    }
+
+    fn set_virtual_timer(
+        &mut self,
+        _value: &virt::aarch64::vp::VirtualTimerState,
+    ) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("virtual timer restore"))
+    }
+
+    fn extended_system_registers(
+        &mut self,
+    ) -> Result<virt::aarch64::vp::ExtendedSystemRegisters, Self::Error> {
+        Err(vp_state::Error::Unimplemented(
+            "extended system registers save",
+        ))
+    }
+
+    fn set_extended_system_registers(
+        &mut self,
+        _value: &virt::aarch64::vp::ExtendedSystemRegisters,
+    ) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented(
+            "extended system registers restore",
+        ))
+    }
 }
 
 mod save_restore {

@@ -31,6 +31,8 @@ use vmm_core::partition_unit::StopGuard;
 
 /// Snapshot-restore inputs taken from the [`VmWorkerParameters`].
 pub(super) struct RestoreParameters {
+    /// Whether the restored snapshot was captured from a Linux-direct boot.
+    pub(super) linux_direct_boot: bool,
     /// Restore state handed to the loaded VM.
     pub(super) state: SnapshotRestore,
     /// Saved canonical CPU contract required by restore.
@@ -70,6 +72,7 @@ impl RestoreParameters {
             cpu_contract,
             file_mapping_mode,
             guards,
+            linux_direct_boot: parameters.restore_linux_direct_boot,
         })
     }
 

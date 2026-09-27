@@ -77,6 +77,9 @@ pub struct VmWorkerParameters {
     pub snapshot_capture_enabled: bool,
     /// Host downtime to apply before starting a restored VM.
     pub restore_downtime: Option<std::time::Duration>,
+    /// Whether the restored snapshot was captured from a Linux-direct boot.
+    /// Restore uses this to rebuild boot-mode-dependent guest physical layout.
+    pub restore_linux_direct_boot: bool,
     /// Saved effective TSC frequency required by restore.
     pub restore_tsc_frequency_hz: Option<u64>,
     /// Saved local APIC timer frequency required by restore.

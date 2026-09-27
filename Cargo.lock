@@ -9683,6 +9683,7 @@ dependencies = [
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
+ "virt_support_gic",
  "vm_topology",
  "vmcore",
  "x86defs",
@@ -9872,8 +9873,10 @@ name = "virt_support_gic"
 version = "0.0.0"
 dependencies = [
  "aarch64defs",
+ "anyhow",
  "inspect",
  "memory_range",
+ "mesh_protobuf",
  "parking_lot",
  "tracelimit",
  "tracing",

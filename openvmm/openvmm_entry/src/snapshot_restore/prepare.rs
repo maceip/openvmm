@@ -16,6 +16,7 @@ pub(crate) struct PreparedSnapshotRestore {
     pub(crate) guards: openvmm_defs::worker::SnapshotRestoreGuards,
     pub(crate) saved_state: mesh::payload::message::ProtobufMessage,
     pub(crate) restore_time: Option<(Duration, u64, Option<u64>, Vec<u8>)>,
+    pub(crate) linux_direct_boot: bool,
 }
 
 /// Validate an opened snapshot generation against the current VM config.
@@ -47,6 +48,7 @@ pub(crate) fn prepare_snapshot_restore_for_config(
 ) -> anyhow::Result<PreparedSnapshotRestore> {
     let artifact_prepare = openvmm_defs::profile::ProfileSpan::start();
     let manifest = snapshot.manifest();
+    let linux_direct_boot = manifest.linux_direct_boot;
     // Validate manifest against current VM config.
     openvmm_helpers::snapshot::validate_manifest(
         manifest,
@@ -118,5 +120,6 @@ pub(crate) fn prepare_snapshot_restore_for_config(
         guards,
         saved_state: state_msg,
         restore_time,
+        linux_direct_boot,
     })
 }

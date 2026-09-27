@@ -172,6 +172,10 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             isolation: virt::IsolationType::None,
             supports_aarch32_el0: false,
             vendor: Vendor::ARM,
+            // GIC state save/restore is not implemented for this backend.
+            gic_max_spis: 0,
+            virtual_timer_save: false,
+            extended_system_registers_save: false,
         };
 
         let inner = Arc::new(MshvPartitionInner {
@@ -320,6 +324,17 @@ impl virt::aarch64::vm::AccessVmState for &'_ MshvPartition {
 
     fn commit(&mut self) -> Result<(), Self::Error> {
         Ok(())
+    }
+
+    fn distributor(&mut self) -> Result<virt::aarch64::SavedDistributorState, Self::Error> {
+        Err(ErrorInner::NotSupported.into())
+    }
+
+    fn set_distributor(
+        &mut self,
+        _value: &virt::aarch64::SavedDistributorState,
+    ) -> Result<(), Self::Error> {
+        Err(ErrorInner::NotSupported.into())
     }
 }
 
@@ -670,6 +685,41 @@ impl virt::vp::AccessVpState for &'_ mut MshvProcessor<'_> {
         value: &virt::aarch64::vp::SystemRegisters,
     ) -> Result<(), Self::Error> {
         self.set_register_state(value)
+    }
+
+    fn redistributor(&mut self) -> Result<virt::aarch64::SavedRedistributorState, Self::Error> {
+        Err(ErrorInner::NotSupported.into())
+    }
+
+    fn set_redistributor(
+        &mut self,
+        _value: &virt::aarch64::SavedRedistributorState,
+    ) -> Result<(), Self::Error> {
+        Err(ErrorInner::NotSupported.into())
+    }
+
+    fn virtual_timer(&mut self) -> Result<virt::aarch64::vp::VirtualTimerState, Self::Error> {
+        Err(ErrorInner::NotSupported.into())
+    }
+
+    fn set_virtual_timer(
+        &mut self,
+        _value: &virt::aarch64::vp::VirtualTimerState,
+    ) -> Result<(), Self::Error> {
+        Err(ErrorInner::NotSupported.into())
+    }
+
+    fn extended_system_registers(
+        &mut self,
+    ) -> Result<virt::aarch64::vp::ExtendedSystemRegisters, Self::Error> {
+        Err(ErrorInner::NotSupported.into())
+    }
+
+    fn set_extended_system_registers(
+        &mut self,
+        _value: &virt::aarch64::vp::ExtendedSystemRegisters,
+    ) -> Result<(), Self::Error> {
+        Err(ErrorInner::NotSupported.into())
     }
 }
 

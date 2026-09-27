@@ -72,6 +72,12 @@ pub struct SnapshotManifest {
     /// Bitmask of configuration sections consumed before capture.
     #[mesh(17)]
     pub consumed_config_sections: u32,
+    /// Whether the snapshot was captured from a Linux-direct boot. Restore
+    /// uses this to rebuild boot-mode-dependent guest physical layout (such
+    /// as the aarch64 low-RAM reservation). False for snapshots written
+    /// before this field existed.
+    #[mesh(18)]
+    pub linux_direct_boot: bool,
 }
 
 /// Validate that a snapshot manifest is compatible with the running VM config.

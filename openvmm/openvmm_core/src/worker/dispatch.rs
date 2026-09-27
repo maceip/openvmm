@@ -213,6 +213,7 @@ impl Manifest {
             machine_profile: config.machine_profile,
             microvm: config.microvm.into(),
             load_mode: config.load_mode,
+            restore_linux_direct_boot: false,
             floppy_disks: config.floppy_disks,
             ide_disks: config.ide_disks,
             pcie_root_complexes: config.pcie_root_complexes,
@@ -257,6 +258,11 @@ impl Manifest {
 #[derive(MeshPayload)]
 pub struct Manifest {
     load_mode: LoadMode,
+    /// Whether a restored snapshot was captured from a Linux-direct boot.
+    /// Used to rebuild boot-mode-dependent guest physical layout when
+    /// `load_mode` itself is `None` (restore). Always false for fresh boots
+    /// (where `load_mode` is authoritative) and restarts (propagated).
+    restore_linux_direct_boot: bool,
     floppy_disks: Vec<FloppyDiskConfig>,
     ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
@@ -347,7 +353,11 @@ impl Worker for VmWorker {
         let microvm_params = microvm::MicrovmParameters::take(&mut parameters)?;
         let (device_thread, device_driver) = new_device_thread();
 
-        let manifest = Manifest::from_config(parameters.cfg);
+        let mut manifest = Manifest::from_config(parameters.cfg);
+        // A restore must rebuild the save-time layout even though its own
+        // load mode is `None`; the snapshot manifest records whether the
+        // source booted Linux directly.
+        manifest.restore_linux_direct_boot = restore_params.linux_direct_boot;
 
         let hypervisor = block_on(ResourceResolver::new().resolve(parameters.hypervisor, ()))
             .context("failed to resolve hypervisor backend")?;
@@ -850,6 +860,7 @@ struct LoadedVmInner {
 
     machine_profile: MachineProfile,
     load_mode: LoadMode,
+    restore_linux_direct_boot: bool,
     igvm_file: Option<IgvmFile>,
     next_igvm_file: Option<IgvmFile>,
     _vmgs_task: Option<Task<()>>,
@@ -1232,12 +1243,17 @@ impl InitializedVm {
         //  2. Fix UEFI to allow booting from >0.
         //  3. Install a little bit of low memory, enough for UEFI to get to DXE
         //     (which can run anywhere.)
-        let ram_start_address =
-            if cfg!(guest_arch = "aarch64") && matches!(cfg.load_mode, LoadMode::Linux { .. }) {
-                1024 * 1024 * 1024 // 1 GiB
-            } else {
-                0
-            };
+        // A restore carries `LoadMode::None` even when its snapshot came from
+        // a Linux-direct boot; `restore_linux_direct_boot` preserves the
+        // save-time layout so RAM lands at the same guest addresses.
+        let ram_start_address = if cfg!(guest_arch = "aarch64")
+            && (matches!(cfg.load_mode, LoadMode::Linux { .. })
+                || cfg.restore_linux_direct_boot)
+        {
+            1024 * 1024 * 1024 // 1 GiB
+        } else {
+            0
+        };
 
         let vtl2_framebuffer_size = if cfg.vtl2_gfx {
             cfg.framebuffer
@@ -3214,6 +3230,7 @@ impl InitializedVm {
                 firmware_event_send: cfg.firmware_event_send,
                 machine_profile: cfg.machine_profile,
                 load_mode: cfg.load_mode,
+                restore_linux_direct_boot: cfg.restore_linux_direct_boot,
                 virtio_mmio_region,
                 virtio_mmio_irq,
                 chipset_mmio,
@@ -4399,6 +4416,7 @@ impl LoadedVm {
             machine_profile: self.inner.machine_profile,
             microvm: Default::default(), // TODO
             load_mode: self.inner.load_mode,
+            restore_linux_direct_boot: self.inner.restore_linux_direct_boot,
             floppy_disks: vec![],            // TODO
             ide_disks: vec![],               // TODO
             pcie_root_complexes: vec![],     // TODO

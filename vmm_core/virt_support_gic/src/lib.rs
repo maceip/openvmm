@@ -9,6 +9,89 @@
 pub use gicd::Distributor;
 pub use gicr::Redistributor;
 
+/// Captured software-GIC distributor state for snapshot save/restore.
+///
+/// Topology (SPI count, CPU count, MPIDRs) is established at partition build
+/// time and is not recorded here; restore validates vector lengths against
+/// the live distributor and fails closed on mismatch.
+///
+/// The guest-visible CPU interface (ICC_* registers) is not emulated by this
+/// crate and carries no state here.
+#[derive(Debug, Clone, PartialEq, Eq, mesh_protobuf::Protobuf, inspect::Inspect)]
+#[mesh(package = "virt.aarch64.gic")]
+pub struct SavedDistributorState {
+    #[mesh(1)]
+    #[inspect(iter_by_index)]
+    pub pending: Vec<u32>,
+    #[mesh(2)]
+    #[inspect(iter_by_index)]
+    pub active: Vec<u32>,
+    #[mesh(3)]
+    #[inspect(iter_by_index)]
+    pub group: Vec<u32>,
+    #[mesh(4)]
+    #[inspect(iter_by_index)]
+    pub enable: Vec<u32>,
+    #[mesh(5)]
+    #[inspect(iter_by_index)]
+    pub cfg: Vec<u32>,
+    #[mesh(6)]
+    #[inspect(iter_by_index)]
+    pub priority: Vec<u32>,
+    #[mesh(7)]
+    #[inspect(iter_by_index)]
+    pub route: Vec<u64>,
+    #[mesh(8)]
+    pub enable_grp0: bool,
+    #[mesh(9)]
+    pub enable_grp1: bool,
+}
+
+impl SavedDistributorState {
+    /// Returns the distributor state at machine reset for `max_spis` SPIs.
+    ///
+    /// Vector lengths use the same sizing as [`Distributor::new`]; restore
+    /// fails closed when a saved image disagrees on any length.
+    pub fn at_reset(max_spis: u32) -> Self {
+        let n = (max_spis as usize + 1) / 32;
+        Self {
+            pending: vec![0; n],
+            active: vec![0; n],
+            group: vec![0; n],
+            enable: vec![0; n],
+            cfg: vec![0; n * 2],
+            priority: vec![0; n * 8],
+            route: vec![0; n * 64],
+            enable_grp0: false,
+            enable_grp1: false,
+        }
+    }
+}
+
+/// Captured per-CPU redistributor state for snapshot save/restore.
+///
+/// The MPIDR and last-CPU topology flags are stable for the partition and are
+/// not recorded here; restore addresses the redistributor by VP index.
+#[derive(Debug, Clone, PartialEq, Eq, mesh_protobuf::Protobuf, inspect::Inspect)]
+#[mesh(package = "virt.aarch64.gic")]
+pub struct SavedRedistributorState {
+    #[mesh(1)]
+    pub pending: u32,
+    #[mesh(2)]
+    pub active: u32,
+    #[mesh(3)]
+    pub group: u32,
+    #[mesh(4)]
+    pub enable: u32,
+    #[mesh(5)]
+    pub ppi_cfg: u32,
+    #[mesh(6)]
+    #[inspect(iter_by_index)]
+    pub priority: [u32; 8],
+    #[mesh(7)]
+    pub sleep: bool,
+}
+
 mod gicd {
     use super::Redistributor;
     use super::gicr::SharedState;
@@ -19,6 +102,7 @@ mod gicd {
     use aarch64defs::gic::GicdTyper;
     use aarch64defs::gic::GicdTyper2;
     use aarch64defs::gic::GicrSgi;
+    use anyhow::Context;
     use inspect::Inspect;
     use memory_range::MemoryRange;
     use parking_lot::Mutex;
@@ -111,6 +195,81 @@ mod gicd {
                 *v &= !mask;
                 None
             }
+        }
+
+        /// Captures the distributor state for a snapshot.
+        ///
+        /// The caller must have paused all VPs; the state is otherwise stable
+        /// while devices are quiesced.
+        pub fn save(&self) -> super::SavedDistributorState {
+            let state = self.state.lock();
+            super::SavedDistributorState {
+                pending: state.pending.clone(),
+                active: state.active.clone(),
+                group: state.group.clone(),
+                enable: state.enable.clone(),
+                cfg: state.cfg.clone(),
+                priority: state.priority.clone(),
+                route: state.route.clone(),
+                enable_grp0: state.enable_grp0,
+                enable_grp1: state.enable_grp1,
+            }
+        }
+
+        /// Restores distributor state captured by [`Self::save`].
+        ///
+        /// Vector lengths must match the live distributor exactly (topology is
+        /// established at partition build and is not renegotiated here).
+        pub fn restore(&self, state: &super::SavedDistributorState) -> anyhow::Result<()> {
+            let mut current = self.state.lock();
+            let check = |name: &str, expected: usize, actual: usize| {
+                anyhow::ensure!(
+                    expected == actual,
+                    "saved GIC distributor {name} has length {actual}, expected {expected}"
+                );
+                Ok(())
+            };
+            check("pending", current.pending.len(), state.pending.len())?;
+            check("active", current.active.len(), state.active.len())?;
+            check("group", current.group.len(), state.group.len())?;
+            check("enable", current.enable.len(), state.enable.len())?;
+            check("cfg", current.cfg.len(), state.cfg.len())?;
+            check("priority", current.priority.len(), state.priority.len())?;
+            check("route", current.route.len(), state.route.len())?;
+            current.pending.clone_from(&state.pending);
+            current.active.clone_from(&state.active);
+            current.group.clone_from(&state.group);
+            current.enable.clone_from(&state.enable);
+            current.cfg.clone_from(&state.cfg);
+            current.priority.clone_from(&state.priority);
+            current.route.clone_from(&state.route);
+            current.enable_grp0 = state.enable_grp0;
+            current.enable_grp1 = state.enable_grp1;
+            Ok(())
+        }
+
+        /// Captures the redistributor state of one VP for a snapshot.
+        pub fn save_redistributor(
+            &self,
+            vp: VpIndex,
+        ) -> anyhow::Result<super::SavedRedistributorState> {
+            self.gicr
+                .get(vp.index() as usize)
+                .context("saved GIC redistributor VP index out of range")
+                .map(|gicr| gicr.save())
+        }
+
+        /// Restores the redistributor state of one VP captured by
+        /// [`Self::save_redistributor`].
+        pub fn restore_redistributor(
+            &self,
+            vp: VpIndex,
+            state: &super::SavedRedistributorState,
+        ) -> anyhow::Result<()> {
+            self.gicr
+                .get(vp.index() as usize)
+                .context("saved GIC redistributor VP index out of range")
+                .map(|gicr| gicr.restore(state))
         }
 
         pub fn irq_pending(&self, gicr: &Redistributor) -> bool {
@@ -541,6 +700,33 @@ mod gicr {
     }
 
     impl SharedState {
+        /// Captures this CPU's redistributor state for a snapshot.
+        pub(crate) fn save(&self) -> super::SavedRedistributorState {
+            let mutable = self.mutable.lock();
+            super::SavedRedistributorState {
+                pending: self.pending.load(Ordering::Relaxed),
+                active: mutable.active,
+                group: mutable.group,
+                enable: mutable.enable,
+                ppi_cfg: mutable.ppi_cfg,
+                priority: mutable.priority,
+                sleep: mutable.sleep,
+            }
+        }
+
+        /// Restores state captured by [`Self::save`]. Topology (MPIDR, last
+        /// CPU) is established at partition build and is left untouched.
+        pub(crate) fn restore(&self, state: &super::SavedRedistributorState) {
+            self.pending.store(state.pending, Ordering::Relaxed);
+            let mut mutable = self.mutable.lock();
+            mutable.active = state.active;
+            mutable.group = state.group;
+            mutable.enable = state.enable;
+            mutable.ppi_cfg = state.ppi_cfg;
+            mutable.priority = state.priority;
+            mutable.sleep = state.sleep;
+        }
+
         pub fn raise(&self, intid: u32) -> bool {
             let mask = 1 << intid;
             self.pending.fetch_or(mask, Ordering::Relaxed) & mask == 0
@@ -810,5 +996,66 @@ mod gicr {
             tracing::trace!(intid, "eoi");
             self.shared.mutable.lock().active &= !(1 << intid);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Distributor;
+    use super::SavedDistributorState;
+    use memory_range::MemoryRange;
+    use vm_topology::processor::VpIndex;
+
+    const MAX_SPIS: u32 = 256;
+
+    fn test_distributor() -> Distributor {
+        Distributor::new(
+            0x800_0000,
+            MemoryRange::new(0x801_0000..0x801_0000 + 2 * aarch64defs::GIC_REDISTRIBUTOR_SIZE),
+            MAX_SPIS,
+        )
+    }
+
+    #[test]
+    fn fresh_distributor_matches_at_reset() {
+        let gicd = test_distributor();
+        assert_eq!(gicd.save(), SavedDistributorState::at_reset(MAX_SPIS));
+    }
+
+    #[test]
+    fn distributor_save_restore_roundtrip() {
+        let mut gicd = test_distributor();
+        gicd.add_redistributor(0, false);
+        gicd.add_redistributor(1, true);
+        // A pending SPI and a PPI raised on VP 0.
+        assert_eq!(gicd.set_pending(47, true), Some(0));
+        gicd.raise_ppi(VpIndex::new(0), 27);
+
+        let saved = gicd.save();
+        assert_ne!(saved, SavedDistributorState::at_reset(MAX_SPIS));
+
+        // Disturb the live state, then restore and compare again.
+        let _ = gicd.set_pending(47, false);
+        gicd.restore(&saved).unwrap();
+        assert_eq!(gicd.save(), saved);
+
+        // A redistributor captured through the distributor round-trips too.
+        let saved_rdist = gicd.save_redistributor(VpIndex::new(0)).unwrap();
+        gicd.raise_ppi(VpIndex::new(0), 30);
+        gicd.restore_redistributor(VpIndex::new(0), &saved_rdist)
+            .unwrap();
+        assert_eq!(
+            gicd.save_redistributor(VpIndex::new(0)).unwrap(),
+            saved_rdist
+        );
+    }
+
+    #[test]
+    fn distributor_restore_rejects_topology_mismatch() {
+        let gicd = test_distributor();
+        // Saved with a different SPI count: every vector length disagrees.
+        let wrong = SavedDistributorState::at_reset(32);
+        assert_ne!(wrong.pending.len(), gicd.save().pending.len());
+        assert!(gicd.restore(&wrong).is_err());
     }
 }

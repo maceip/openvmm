@@ -617,7 +617,7 @@ fn linux_allocated_ranges(file: &std::fs::File, length: u64) -> std::io::Result<
     Ok(ranges)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn allocated_file_bytes(file: &std::fs::File, _length: u64) -> anyhow::Result<u64> {
     use std::os::unix::fs::MetadataExt;
 
@@ -647,7 +647,7 @@ pub(super) fn allocated_file_bytes(file: &std::fs::File, length: u64) -> anyhow:
     }
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(super) fn allocated_file_bytes(file: &std::fs::File, _length: u64) -> anyhow::Result<u64> {
     Ok(file.metadata()?.len())
 }

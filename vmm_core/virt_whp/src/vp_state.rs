@@ -471,5 +471,44 @@ mod aarch64 {
         fn set_system_registers(&mut self, value: &vp::SystemRegisters) -> Result<(), Self::Error> {
             self.run.vp.set_register_state(self.vtl, value)
         }
+
+        fn redistributor(&mut self) -> Result<virt::aarch64::SavedRedistributorState, Self::Error> {
+            Err(Error::UnsupportedParameter("GIC redistributor save"))
+        }
+
+        fn set_redistributor(
+            &mut self,
+            _value: &virt::aarch64::SavedRedistributorState,
+        ) -> Result<(), Self::Error> {
+            Err(Error::UnsupportedParameter("GIC redistributor restore"))
+        }
+
+        fn virtual_timer(&mut self) -> Result<virt::aarch64::vp::VirtualTimerState, Self::Error> {
+            Err(Error::UnsupportedParameter("virtual timer save"))
+        }
+
+        fn set_virtual_timer(
+            &mut self,
+            _value: &virt::aarch64::vp::VirtualTimerState,
+        ) -> Result<(), Self::Error> {
+            Err(Error::UnsupportedParameter("virtual timer restore"))
+        }
+
+        fn extended_system_registers(
+            &mut self,
+        ) -> Result<virt::aarch64::vp::ExtendedSystemRegisters, Self::Error> {
+            Err(Error::UnsupportedParameter(
+                "extended system registers save",
+            ))
+        }
+
+        fn set_extended_system_registers(
+            &mut self,
+            _value: &virt::aarch64::vp::ExtendedSystemRegisters,
+        ) -> Result<(), Self::Error> {
+            Err(Error::UnsupportedParameter(
+                "extended system registers restore",
+            ))
+        }
     }
 }

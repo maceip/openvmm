@@ -1333,6 +1333,10 @@ impl WhpPartitionInner {
                     .bank0
                     .is_set(whp::abi::WHV_PROCESSOR_FEATURES::El0Aarch32),
                 vendor,
+                // GIC state save/restore is not implemented for this backend.
+                gic_max_spis: 0,
+                virtual_timer_save: false,
+                extended_system_registers_save: false,
             }
         };
 

@@ -111,5 +111,16 @@ mod aarch64 {
             let _ = self.vtl;
             Ok(())
         }
+
+        fn distributor(&mut self) -> Result<virt::aarch64::SavedDistributorState, Self::Error> {
+            Err(Error::UnsupportedParameter("GIC distributor save"))
+        }
+
+        fn set_distributor(
+            &mut self,
+            _value: &virt::aarch64::SavedDistributorState,
+        ) -> Result<(), Self::Error> {
+            Err(Error::UnsupportedParameter("GIC distributor restore"))
+        }
     }
 }

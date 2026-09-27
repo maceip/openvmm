@@ -36,8 +36,35 @@ const SAVED_STATE_VERSION: u32 = 1;
 /// Save and restore configuration of a device built with
 /// [`NicBuilder::save_restore`].
 pub(crate) struct SaveRestoreConfig {
-    static_ipv4: StaticIpv4Config,
-    effective_features: u64,
+    pub(crate) static_ipv4: StaticIpv4Config,
+    /// Pinned effective feature contract. When `None`, the device's full
+    /// offered set (see [`crate::offered_device_features`]) is used, which is
+    /// stable for identical backend configurations.
+    pub(crate) effective_features: Option<u64>,
+}
+
+/// Resolves the effective feature contract for `adapter`: the
+/// resource-pinned value, or the device's offered set.
+///
+/// The default mirrors the actual offer, including the packed-ring exclusion
+/// for default-contract devices (see `traits`): the contract must describe a
+/// negotiable, restorable set.
+pub(crate) fn resolve_effective_features(adapter: &Adapter) -> u64 {
+    if let Some(bits) = adapter
+        .save_restore
+        .as_ref()
+        .and_then(|config| config.effective_features)
+    {
+        return bits;
+    }
+    // Mirror the transport core's offer augmentation (`VirtioTransportCore::new`
+    // always adds VERSION_1 and ACCESS_PLATFORM to whatever the device
+    // reports): the contract must cover everything the guest can negotiate.
+    let offered = crate::offered_device_features(&adapter.tx_offload_support)
+        .with_version_1(true)
+        .with_access_platform(true)
+        .with_ring_packed(false);
+    (offered.bank(1) as u64) << 32 | (offered.bank(0) as u64)
 }
 
 /// Queue-pair stop, quiesce and restore bookkeeping of a [`Device`].
@@ -67,25 +94,28 @@ impl NicBuilder {
     pub fn save_restore(mut self, static_ipv4: StaticIpv4Config, effective_features: u64) -> Self {
         self.save_restore = Some(SaveRestoreConfig {
             static_ipv4,
-            effective_features,
+            effective_features: Some(effective_features),
         });
         self
     }
 
     /// Applies the save and restore configuration of a virtio-net resource.
+    ///
+    /// An absent resource feature contract defaults to the device's full
+    /// offered set (see [`resolve_effective_features`]).
     pub(crate) fn save_restore_resource(self, resource: &VirtioNetHandle) -> anyhow::Result<Self> {
         if !resource.save_restore {
             return Ok(self);
         }
-        Ok(self.save_restore(
-            resource
+        let mut this = self;
+        this.save_restore = Some(SaveRestoreConfig {
+            static_ipv4: resource
                 .static_ipv4
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("saved virtio-net requires static IPv4 identity"))?,
-            resource.effective_features.ok_or_else(|| {
-                anyhow::anyhow!("saved virtio-net requires an effective feature contract")
-            })?,
-        ))
+            effective_features: resource.effective_features,
+        });
+        Ok(this)
     }
 }
 
@@ -158,7 +188,11 @@ impl Device {
             }
             QueuePairState::Active if self.adapter.save_restore.is_some() => {
                 if let Err(error) = self.capture_stopped_pairs().await {
-                    self.lifecycle.stop_error = Some(error);
+                    // Keep the first error: later stops retry the capture and
+                    // must not overwrite the root cause.
+                    if self.lifecycle.stop_error.is_none() {
+                        self.lifecycle.stop_error = Some(error);
+                    }
                     return ControlFlow::Break(None);
                 }
                 ControlFlow::Break(self.take_stopped_queue(idx))
@@ -184,6 +218,15 @@ impl Device {
 
     async fn capture_stopped_pairs(&mut self) -> anyhow::Result<()> {
         self.quiesce_active_workers(false).await?;
+        // The coordinator is stopped by the quiesce above, so inspecting its
+        // state is safe. A missing state means a previous capture attempt
+        // removed it before failing: bail instead of panicking in `remove`
+        // so the recorded error (not a panic) fails the save.
+        if self.coordinator.state().is_none() {
+            anyhow::bail!(
+                "virtio-net coordinator state is missing (a previous capture attempt failed)"
+            );
+        }
         let mut coordinator = self.coordinator.remove();
         self.lifecycle.stopped_queue_count = 0;
         for (pair_index, worker) in coordinator.workers.iter_mut().enumerate() {
@@ -218,7 +261,7 @@ impl Device {
             ))
         })?;
         let static_ipv4 = &config.static_ipv4;
-        let effective_features = config.effective_features;
+        let effective_features = resolve_effective_features(&self.adapter);
         if !self.pairs.iter().all(|pair| {
             matches!(
                 pair,
@@ -380,7 +423,7 @@ fn validate_saved_state(
         .as_ref()
         .ok_or_else(|| invalid_saved_state("virtio-net static IPv4 identity is unavailable"))?;
     let static_ipv4 = &config.static_ipv4;
-    let effective_features = config.effective_features;
+    let effective_features = resolve_effective_features(adapter);
     if saved.guest_ipv4 != u32::from(static_ipv4.guest_ipv4)
         || saved.prefix_length != u32::from(static_ipv4.prefix_length)
         || saved.gateway_ipv4 != u32::from(static_ipv4.gateway_ipv4)

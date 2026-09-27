@@ -272,42 +272,67 @@ enum QueuePairState {
     },
 }
 
+/// The exact feature set offered to the guest for the given backend TX
+/// offloads.
+///
+/// This is also the basis of the default save/restore feature contract when
+/// the resource does not pin one explicitly: the offer is backend-determined,
+/// so it is stable for identical configurations, and any guest negotiation is
+/// a subset of it by construction. (The default contract additionally drops
+/// packed rings; see `traits`.)
+pub(crate) fn offered_device_features(offloads: &TxOffloadSupport) -> VirtioDeviceFeatures {
+    // VIRTIO_NET_F_CSUM: we can handle partial checksum from the guest
+    let csum = offloads.tcp && offloads.udp;
+    // VIRTIO_NET_F_HOST_TSO4/6: we can handle TSO from the guest
+    let host_tso = offloads.tso && offloads.tcp;
+    // VIRTIO_NET_F_HOST_USO (bank 1): we can handle UDP segmentation from
+    // the guest. This is the modern USO feature (bit 56); the legacy
+    // HOST_UFO (bit 14) is not offered because it is deprecated in modern
+    // Linux kernels.
+    let host_uso = offloads.uso && offloads.udp;
+
+    let features_bank0 = NetworkFeaturesBank0::new()
+        .with_mac(true)
+        .with_status(true)
+        .with_csum(csum)
+        .with_guest_csum(true)
+        .with_host_tso4(host_tso)
+        .with_host_tso6(host_tso);
+
+    let features_bank1 = NetworkFeaturesBank1::new().with_host_uso(host_uso);
+
+    VirtioDeviceFeatures::new()
+        .with_bank(0, features_bank0.into_bits())
+        .with_bank(1, features_bank1.into_bits())
+        .with_ring_event_idx(true)
+        .with_ring_indirect_desc(true)
+        .with_ring_packed(true)
+        // We guarantee in-order descriptor completion per queue. We
+        // don't yet take advantage of the ability to do batched
+        // completions, but we may in the future.
+        .with_in_order(true)
+}
+
 impl VirtioDevice for Device {
     fn traits(&self) -> DeviceTraits {
-        let offloads = &self.adapter.tx_offload_support;
-
-        // VIRTIO_NET_F_CSUM: we can handle partial checksum from the guest
-        let csum = offloads.tcp && offloads.udp;
-        // VIRTIO_NET_F_HOST_TSO4/6: we can handle TSO from the guest
-        let host_tso = offloads.tso && offloads.tcp;
-        // VIRTIO_NET_F_HOST_USO (bank 1): we can handle UDP segmentation from
-        // the guest. This is the modern USO feature (bit 56); the legacy
-        // HOST_UFO (bit 14) is not offered because it is deprecated in modern
-        // Linux kernels.
-        let host_uso = offloads.uso && offloads.udp;
-
-        let features_bank0 = NetworkFeaturesBank0::new()
-            .with_mac(true)
-            .with_status(true)
-            .with_csum(csum)
-            .with_guest_csum(true)
-            .with_host_tso4(host_tso)
-            .with_host_tso6(host_tso);
-
-        let features_bank1 = NetworkFeaturesBank1::new().with_host_uso(host_uso);
-
+        let mut device_features = offered_device_features(&self.adapter.tx_offload_support);
+        // A device on the default save/restore contract must not offer packed
+        // rings: their avail cursor carries a wrap flag rather than a count,
+        // so queue progress cannot be captured, and restore rejects packed
+        // negotiations outright. Any guest that negotiated packed could never
+        // be restored. Devices with an explicitly pinned contract (such as
+        // the microVM NIC) keep their existing offer.
+        if self
+            .adapter
+            .save_restore
+            .as_ref()
+            .is_some_and(|config| config.effective_features.is_none())
+        {
+            device_features = device_features.with_ring_packed(false);
+        }
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::NET,
-            device_features: VirtioDeviceFeatures::new()
-                .with_bank(0, features_bank0.into_bits())
-                .with_bank(1, features_bank1.into_bits())
-                .with_ring_event_idx(true)
-                .with_ring_indirect_desc(true)
-                .with_ring_packed(true)
-                // We guarantee in-order descriptor completion per queue. We
-                // don't yet take advantage of the ability to do batched
-                // completions, but we may in the future.
-                .with_in_order(true),
+            device_features,
             max_queues: 2 * self.registers.max_virtqueue_pairs,
             device_register_length: size_of::<NetConfig>() as u32,
             shared_memory: DeviceTraitsSharedMemory { id: 0, size: 0 },

@@ -133,6 +133,9 @@ pub struct VmController {
     pub(crate) memory_backing_file: Option<PathBuf>,
     pub(crate) memory: u64,
     pub(crate) processors: u32,
+    /// Whether this VM booted Linux directly (no firmware). Recorded in
+    /// snapshot manifests so restore can rebuild boot-mode-dependent layout.
+    pub(crate) linux_direct_boot: bool,
     pub(crate) log_file: Option<PathBuf>,
     pub(crate) crash_dump_path: Option<PathBuf>,
     pub(crate) microvm: MicrovmController,
@@ -547,6 +550,7 @@ impl VmController {
             vp_count: self.processors,
             page_size: crate::system_page_size(),
             architecture: crate::GUEST_ARCH.to_string(),
+            linux_direct_boot: self.linux_direct_boot,
             ..Default::default()
         };
 
