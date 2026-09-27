@@ -10,7 +10,6 @@ rust-version.workspace = true
 gdb = ["vmm_core/gdb"]
 
 [dev-dependencies]
-chipset.workspace = true
 test_with_tracing.workspace = true
 
 [dependencies]
@@ -57,6 +56,7 @@ vmotherboard = { workspace = true, features = [
     "dev_winbond_super_io_and_floppy_full",
 ] }
 chipset_legacy.workspace = true
+chipset.workspace = true
 chipset_device.workspace = true
 chipset_device_resources.workspace = true
 chipset_device_worker.workspace = true
@@ -76,6 +76,7 @@ pci_core.workspace = true
 pci_resource_assignment.workspace = true
 pci_resources.workspace = true
 pcie.workspace = true
+power_resources.workspace = true
 smmu.workspace = true
 scsi_core.workspace = true
 scsidisk.workspace = true

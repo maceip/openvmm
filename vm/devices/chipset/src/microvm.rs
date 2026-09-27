@@ -9,6 +9,7 @@ use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredWrite;
+use chipset_device::mmio::MmioIntercept;
 use chipset_device::io::deferred::defer_write;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
@@ -474,6 +475,78 @@ impl PortIoIntercept for MicrovmShutdown {
 }
 
 impl SaveRestore for MicrovmShutdown {
+    type SavedState = NoSavedState;
+
+    fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+        Ok(NoSavedState)
+    }
+
+    fn restore(&mut self, NoSavedState: Self::SavedState) -> Result<(), RestoreError> {
+        Ok(())
+    }
+}
+
+/// Process-status shutdown register over MMIO.
+///
+/// ARM guests have no ISA port space, so the classic 0x604 shutdown port is
+/// unreachable there. This device exposes the same contract through one
+/// fixed MMIO page: any write delivers its first byte as the process exit
+/// code (reads return all-ones, like the port). The guest address is
+/// [`MmioShutdown::MMIO_BASE`]; it sits in the aarch64 architectural
+/// reserved window, clear of the GIC, PL011, and MSI frame allocations, so
+/// the memory layout engine never hands it out.
+#[derive(InspectMut)]
+pub struct MmioShutdown {
+    #[inspect(skip)]
+    power_request: PowerRequestClient,
+}
+
+impl MmioShutdown {
+    /// Guest-physical base of the 4 KiB exit register page.
+    pub const MMIO_BASE: u64 = 0xEF00_1000;
+    /// Length of the exit register page.
+    pub const MMIO_LEN: u64 = 0x1000;
+
+    /// Creates the shutdown device.
+    pub fn new(power_request: PowerRequestClient) -> Self {
+        Self { power_request }
+    }
+}
+
+impl ChangeDeviceState for MmioShutdown {
+    fn start(&mut self) {}
+    async fn stop(&mut self) {}
+    async fn reset(&mut self) {}
+}
+
+impl ChipsetDevice for MmioShutdown {
+    fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
+        Some(self)
+    }
+}
+
+impl MmioIntercept for MmioShutdown {
+    fn mmio_read(&mut self, _addr: u64, data: &mut [u8]) -> IoResult {
+        data.fill(0xff);
+        IoResult::Ok
+    }
+
+    fn mmio_write(&mut self, _addr: u64, data: &[u8]) -> IoResult {
+        self.power_request
+            .power_request(PowerRequest::PowerOffWithStatus {
+                code: data.first().copied().unwrap_or(0),
+            });
+        IoResult::Ok
+    }
+
+    fn get_static_regions(&mut self) -> &[(&str, RangeInclusive<u64>)] {
+        static REGIONS: [(&str, RangeInclusive<u64>); 1] =
+            [("nvx-exit", MmioShutdown::MMIO_BASE..=MmioShutdown::MMIO_BASE + MmioShutdown::MMIO_LEN - 1)];
+        &REGIONS
+    }
+}
+
+impl SaveRestore for MmioShutdown {
     type SavedState = NoSavedState;
 
     fn save(&mut self) -> Result<Self::SavedState, SaveError> {

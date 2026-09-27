@@ -2123,6 +2123,24 @@ impl InitializedVm {
             )),
         );
 
+        // NVX exit register: ARM guests have no ISA port space, so expose
+        // the process-status shutdown contract (mirroring the microVM 0x604
+        // port) over a fixed MMIO page. A guest write delivers its first
+        // byte as the process exit code.
+        #[cfg(guest_arch = "aarch64")]
+        chipset_builder.arc_mutex_device("nvx-exit").add(|_services| {
+            let halt = halt_vps.clone();
+            chipset::microvm::MmioShutdown::new(
+                (move |request: power_resources::PowerRequest| match request {
+                    power_resources::PowerRequest::PowerOffWithStatus { code } => {
+                        halt.halt(HaltReason::PowerOffWithStatus { code })
+                    }
+                    _ => halt.halt(HaltReason::PowerOff),
+                })
+                .into(),
+            )
+        })?;
+
         // Add the x86 BSP's LINTs for the PIC to use.
         #[cfg(guest_arch = "x86_64")]
         chipset_builder.add_external_line_target(
