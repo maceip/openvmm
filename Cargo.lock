@@ -5847,6 +5847,7 @@ dependencies = [
  "pci_resource_assignment",
  "pci_resources",
  "pcie",
+ "power_resources",
  "range_map_vec",
  "scsi_core",
  "scsidisk",
