@@ -397,6 +397,35 @@ pub(super) fn copy_exact(
     Ok(())
 }
 
+/// Copy snapshot memory bytes into a process-private temporary file.
+///
+/// Restore uses this to give a restored VM its own writable RAM file: the
+/// restored worker maps the copy instead of the snapshot's `memory.bin`, so
+/// guest writes stay private to the new VM and a later save captures live
+/// RAM. The caller must keep the returned directory alive for as long as the
+/// file may be mapped or saved from; dropping it deletes the copy.
+///
+/// The copy honors `TMPDIR` through the `tempfile` crate, so restores of
+/// large guests may need `TMPDIR` pointed at a roomy filesystem.
+pub fn copy_memory_to_private_file(
+    source_file: &std::fs::File,
+    expected_length: u64,
+) -> anyhow::Result<(tempfile::TempDir, PathBuf)> {
+    let dir = tempfile::Builder::new()
+        .prefix("openvmm-restore-ram-")
+        .tempdir()
+        .context("failed to create private restore memory directory")?;
+    let path = dir.path().join("memory.bin");
+    copy_exact(
+        source_file,
+        &path,
+        expected_length,
+        "snapshot memory",
+        "private restore memory file",
+    )?;
+    Ok((dir, path))
+}
+
 fn size_empty_file(file: &std::fs::File, length: u64, description: &str) -> anyhow::Result<()> {
     file.set_len(0)
         .with_context(|| format!("failed to reset {description}"))?;

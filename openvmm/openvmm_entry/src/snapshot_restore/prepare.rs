@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! Validation of an opened snapshot generation against the VM configuration,
-//! and preparation of the copy-on-write guest RAM and saved state it restores.
+//! and preparation of the private guest RAM copy and saved state it restores.
 
 use crate::Options;
 use crate::microvm;
@@ -17,6 +17,10 @@ pub(crate) struct PreparedSnapshotRestore {
     pub(crate) saved_state: mesh::payload::message::ProtobufMessage,
     pub(crate) restore_time: Option<(Duration, u64, Option<u64>, Vec<u8>)>,
     pub(crate) linux_direct_boot: bool,
+    /// Process-private writable copy of the snapshot's RAM, mapped by the
+    /// worker as its guest memory. Keeping the directory alive pins the path
+    /// so a later save captures live RAM; dropping it deletes the copy.
+    pub(crate) private_memory: (tempfile::TempDir, std::path::PathBuf),
 }
 
 /// Validate an opened snapshot generation against the current VM config.
@@ -97,13 +101,31 @@ pub(crate) fn prepare_snapshot_restore_for_config(
         },
     );
 
-    // Create the private mapping from a duplicate of the exact opened handle.
-    // The original file and directory handles move to the worker and keep this
-    // generation pinned until VM teardown.
+    // Materialize a process-private writable copy of the snapshot's RAM and
+    // map that instead of the snapshot's memory.bin. A copy-on-write mapping
+    // of the original would leave no file holding live RAM, making a later
+    // save impossible; the private copy is mapped shared so guest writes
+    // reach the file and a later save captures them. The original generation
+    // stays pristine and pinned below until VM teardown, so repeated restores
+    // of the same snapshot each get their own copy.
+    // The duplicate validates the opened generation before the copy reads it.
     let cow_section_create = openvmm_defs::profile::ProfileSpan::start();
-    let memory_file = snapshot.duplicate_memory_file_for_mapping(expected_memory_size)?;
-    let shared_memory =
-        openvmm_helpers::shared_memory::file_to_copy_on_write_memory_fd(memory_file)?;
+    let source_memory = snapshot.duplicate_memory_file_for_mapping(expected_memory_size)?;
+    let (private_dir, private_path) = openvmm_helpers::snapshot::fs::copy_memory_to_private_file(
+        &source_memory,
+        expected_memory_size,
+    )?;
+    let private_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&private_path)
+        .with_context(|| {
+            format!(
+                "failed to open private restore memory file {}",
+                private_path.display()
+            )
+        })?;
+    let shared_memory = openvmm_helpers::shared_memory::file_to_shared_memory_fd(private_file)?;
     cow_section_create.complete(
         "restore",
         "cow_section_create",
@@ -121,5 +143,6 @@ pub(crate) fn prepare_snapshot_restore_for_config(
         saved_state: state_msg,
         restore_time,
         linux_direct_boot,
+        private_memory: (private_dir, private_path),
     })
 }

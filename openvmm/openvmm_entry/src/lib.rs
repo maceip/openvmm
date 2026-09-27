@@ -3012,31 +3012,44 @@ async fn run_control_inner(
         None => openvmm_helpers::hypervisor::choose_hypervisor()?,
     };
     let source_hypervisor = hypervisor.id().to_owned();
-    // The boot mode feeds the worker (restore rebuilds boot-mode-dependent
-    // layout from it) and the controller below (recorded in snapshot
-    // manifests for restore).
+    // The fresh-boot mode feeds the worker below (restore rebuilds
+    // boot-mode-dependent layout from the manifest instead). The controller
+    // further below records the effective mode in snapshot manifests;
+    // a restored VM reports the mode it was restored with (see below).
     let linux_direct_boot = matches!(vm_config.load_mode, LoadMode::Linux { .. });
     let vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
-        let (shared_memory, saved_state) = if opt.restore_snapshot.is_some() {
-            let (fd, state_msg) = restore.prepare(&opt, &microvm, &source_hypervisor)?;
-            (Some(fd), Some(state_msg))
-        } else if let Some(shared_memory) = microvm.capture_shared_memory()? {
-            (Some(shared_memory), None)
-        } else {
-            let shared_memory = opt
-                .memory_backing_file()
-                .map(|path| {
-                    openvmm_helpers::shared_memory::open_memory_backing_file(
-                        path,
-                        opt.memory_size(),
-                    )
-                })
-                .transpose()?;
-            (shared_memory, None)
-        };
+        let (shared_memory, saved_state, restored_private_memory) =
+            if opt.restore_snapshot.is_some() {
+                let (fd, state_msg, private_memory) =
+                    restore.prepare(&opt, &microvm, &source_hypervisor)?;
+                (Some(fd), Some(state_msg), Some(private_memory))
+            } else if let Some(shared_memory) = microvm.capture_shared_memory()? {
+                (Some(shared_memory), None, None)
+            } else {
+                let shared_memory = opt
+                    .memory_backing_file()
+                    .map(|path| {
+                        openvmm_helpers::shared_memory::open_memory_backing_file(
+                            path,
+                            opt.memory_size(),
+                        )
+                    })
+                    .transpose()?;
+                (shared_memory, None, None)
+            };
         let restore = restore.into_worker();
+        // A restored VM was booted without --kernel/--initrd (they conflict
+        // with --restore-snapshot), so the load mode alone would misreport a
+        // Linux-direct guest as firmware-booted. Record the manifest's boot
+        // mode for the controller below: a later save must persist the mode
+        // the worker rebuilt its layout from, or THAT snapshot's restore
+        // will rebuild the wrong memory layout.
+        let restored_linux_direct_boot = opt
+            .restore_snapshot
+            .is_some()
+            .then_some(restore.linux_direct_boot);
         let restore_ready_sink = snapshot_restore::restore_ready_sink(&opt)?;
 
         let params = VmWorkerParameters {
@@ -3061,12 +3074,17 @@ async fn run_control_inner(
             notify: notify_send,
         };
         let worker_launch = openvmm_defs::profile::ProfileSpan::start();
-        vm_host
+        let worker = vm_host
             .launch_worker(VM_WORKER, params)
             .await
             .context("failed to launch vm worker")
-            .inspect(|_| snapshot_restore::worker_launched(worker_launch))?
+            .inspect(|_| snapshot_restore::worker_launched(worker_launch))?;
+        (worker, restored_private_memory, restored_linux_direct_boot)
     };
+    let (vm_worker, restored_private_memory, restored_linux_direct_boot) = vm_worker;
+    // A restored VM saves the boot mode it was restored with (see above);
+    // a fresh VM derives it from its load mode.
+    let linux_direct_boot = restored_linux_direct_boot.unwrap_or(linux_direct_boot);
 
     if opt.restore_snapshot.is_some() {
         tracing::info!("restoring VM from snapshot");
@@ -3116,7 +3134,15 @@ async fn run_control_inner(
         vm_rpc: vm_rpc.clone(),
         paravisor_diag: Some(paravisor_diag),
         igvm_path: opt.igvm.clone(),
-        memory_backing_file: microvm.memory_backing_file(&opt),
+        // A restored VM saves from its process-private RAM copy; otherwise
+        // save uses the configured backing file, if any.
+        memory_backing_file: restored_private_memory
+            .as_ref()
+            .map(|(_, path)| path.clone())
+            .or_else(|| microvm.memory_backing_file(&opt)),
+        // Keeps the restored VM's private RAM copy alive (and its path
+        // valid for save) until teardown; dropped (deleted) with the VM.
+        restored_private_memory: restored_private_memory.map(|(dir, _)| dir),
         memory: opt.memory_size(),
         processors: opt.processors,
         linux_direct_boot,

@@ -113,7 +113,8 @@ enum InteractiveCommand {
     #[clap(visible_alias = "r")]
     Resume,
 
-    /// Save a snapshot to a directory (requires --memory-backing-file).
+    /// Save a snapshot to a directory (requires --memory-backing-file, or a
+    /// VM launched with --restore-snapshot, which gets a private RAM file).
     #[clap(visible_alias = "snap")]
     SaveSnapshot {
         /// Directory to write the snapshot to.

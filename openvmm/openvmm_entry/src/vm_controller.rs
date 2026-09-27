@@ -131,6 +131,11 @@ pub struct VmController {
     pub(crate) paravisor_diag: Option<Arc<diag_client::DiagClient>>,
     pub(crate) igvm_path: Option<PathBuf>,
     pub(crate) memory_backing_file: Option<PathBuf>,
+    /// Process-private RAM copy of a restored VM. Kept alive so the
+    /// `memory_backing_file` path above stays valid for save until teardown.
+    /// Never read: dropping it (deleting the copy) is its only function.
+    #[allow(dead_code)]
+    pub(crate) restored_private_memory: Option<tempfile::TempDir>,
     pub(crate) memory: u64,
     pub(crate) processors: u32,
     /// Whether this VM booted Linux directly (no firmware). Recorded in
@@ -517,7 +522,7 @@ impl VmController {
         let memory_file_path = self
             .memory_backing_file
             .as_ref()
-            .context("save-snapshot requires --memory-backing-file")?;
+            .context("save-snapshot requires --memory-backing-file or --restore-snapshot")?;
 
         // Pause the VM.
         self.vm_rpc

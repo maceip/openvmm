@@ -22,6 +22,7 @@ mesh.workspace = true
 anyhow.workspace = true
 fs-err.workspace = true
 sha2.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
@@ -41,7 +42,6 @@ features = ["Win32_Storage_FileSystem"]
 
 [dev-dependencies]
 sparse_mmap.workspace = true
-tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -569,6 +569,43 @@ mod tests {
     use std::io::Write;
 
     #[test]
+    fn private_restore_memory_copy_roundtrips_source_bytes() {
+        use super::super::fs::copy_memory_to_private_file;
+
+        const MEMORY_SIZE: u64 = 4 * 1024 * 1024;
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("source.bin");
+        let mut source = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&source_path)
+            .unwrap();
+        initialize_snapshot_memory_backing_file(&source, MEMORY_SIZE).unwrap();
+        source.write_all(b"head").unwrap();
+        source.seek(SeekFrom::End(-4)).unwrap();
+        source.write_all(b"tail").unwrap();
+        source.sync_all().unwrap();
+
+        let mut expected = vec![0_u8; MEMORY_SIZE as usize];
+        let tail_offset = expected.len() - 4;
+        expected[..4].copy_from_slice(b"head");
+        expected[tail_offset..].copy_from_slice(b"tail");
+
+        let (private_dir, private_path) =
+            copy_memory_to_private_file(&source, MEMORY_SIZE).unwrap();
+        assert_eq!(private_path, private_dir.path().join("memory.bin"));
+        assert_eq!(std::fs::read(&private_path).unwrap(), expected);
+
+        // The copy is an independent file: mutating the source afterwards
+        // leaves the private copy unchanged.
+        source.seek(SeekFrom::Start(0)).unwrap();
+        source.write_all(b"xxxx").unwrap();
+        source.sync_all().unwrap();
+        assert_eq!(std::fs::read(&private_path).unwrap(), expected);
+    }
+
+    #[test]
     fn paired_scratch_is_published_and_verified() {
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");

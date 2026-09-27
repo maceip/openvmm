@@ -1300,6 +1300,7 @@ impl VmService {
             paravisor_diag: None,
             igvm_path: None,
             memory_backing_file: controller_fields.memory_backing_file,
+            restored_private_memory: None,
             memory,
             processors,
             log_file: None,

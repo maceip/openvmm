@@ -130,14 +130,19 @@ impl SnapshotRestore {
     /// Validates the opened snapshot generation against the VM configuration
     /// and prepares it for the VM worker.
     ///
-    /// Returns the worker's copy-on-write guest RAM and saved state, and
-    /// records the worker's other restore inputs for [`Self::into_worker`].
+    /// Returns the worker's guest RAM handle and saved state plus the
+    /// process-private RAM file the handle maps, and records the worker's
+    /// other restore inputs for [`Self::into_worker`].
     pub(crate) fn prepare(
         &mut self,
         opt: &Options,
         microvm: &MicrovmLaunch,
         expected_hypervisor: &str,
-    ) -> anyhow::Result<(SharedMemoryFd, ProtobufMessage)> {
+    ) -> anyhow::Result<(
+        SharedMemoryFd,
+        ProtobufMessage,
+        (tempfile::TempDir, std::path::PathBuf),
+    )> {
         let prepared = prepare::prepare_snapshot_restore(
             self.snapshot
                 .take()
@@ -146,7 +151,10 @@ impl SnapshotRestore {
             microvm,
             expected_hypervisor,
         )?;
-        self.worker.shared_memory_copy_on_write = true;
+        // The RAM handle maps a process-private copy of the snapshot's
+        // memory, so the worker maps it shared: guest writes reach the copy
+        // (leaving the snapshot pristine) and a later save captures live RAM.
+        self.worker.shared_memory_copy_on_write = false;
         self.worker.guards = Some(prepared.guards);
         self.worker.linux_direct_boot = prepared.linux_direct_boot;
         if let Some((downtime, tsc_frequency_hz, apic_frequency_hz, cpu_contract)) =
@@ -157,7 +165,11 @@ impl SnapshotRestore {
             self.worker.apic_frequency_hz = apic_frequency_hz;
             self.worker.cpu_contract = Some(cpu_contract);
         }
-        Ok((prepared.shared_memory, prepared.saved_state))
+        Ok((
+            prepared.shared_memory,
+            prepared.saved_state,
+            prepared.private_memory,
+        ))
     }
 
     /// Returns the restore inputs of the VM worker: the defaults of a VM that
