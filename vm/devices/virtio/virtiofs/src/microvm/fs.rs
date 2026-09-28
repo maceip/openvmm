@@ -169,6 +169,11 @@ impl VirtioFs {
         self.inner.microvm_profile.as_ref()
     }
 
+    /// Returns the attributes of the opened attachment root.
+    pub(crate) fn microvm_root_stat(&self) -> lx::Result<lx::Stat> {
+        self.get_inode(FUSE_ROOT_ID)?.object_stat()
+    }
+
     pub(crate) fn is_microvm(&self) -> bool {
         self.inner.microvm_profile.is_some()
     }

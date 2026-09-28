@@ -864,6 +864,7 @@ impl CreateVm {
                         root_identity: filesystem.attachment.identity.clone(),
                         read_only: filesystem.config.access.is_read_only(),
                         denied_paths: Vec::new(),
+                        owner: virtio_resources::fs::microvm::VirtioFsOwner::Process,
                     },
                 }
                 .into_resource(),
@@ -1017,6 +1018,7 @@ impl CreateVm {
                 root_identity: attachment.identity.clone(),
                 read_only: filesystem_config.access.is_read_only(),
                 denied_paths: Vec::new(),
+                owner: virtio_resources::fs::microvm::VirtioFsOwner::Process,
             },
         }
         .into_resource();

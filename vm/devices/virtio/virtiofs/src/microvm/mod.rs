@@ -8,6 +8,7 @@ pub(crate) mod file;
 pub(crate) mod fs;
 #[cfg(test)]
 mod fs_tests;
+pub(crate) mod identity;
 pub(crate) mod inode;
 mod limits;
 pub mod profile;

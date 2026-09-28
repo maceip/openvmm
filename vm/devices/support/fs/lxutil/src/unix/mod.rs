@@ -5,8 +5,11 @@
 #![expect(unsafe_code)]
 #![expect(clippy::undocumented_unsafe_blocks)]
 
+mod credentials;
 pub(crate) mod path;
 mod util;
+
+pub use credentials::FsCredentials;
 
 use crate::SetAttributes;
 use lx::StatEx;

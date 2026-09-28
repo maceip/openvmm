@@ -3,6 +3,7 @@
 
 //! microVM virtio-fs device construction and dormant-slot save/restore.
 
+use super::identity::CallerIdentity;
 use super::profile::MICROVM_ATTACHMENT_ID;
 use super::profile::MICROVM_MOUNT_TAG;
 use super::profile::MICROVM_REQUEST_QUEUES;
@@ -19,6 +20,7 @@ use task_control::TaskControl;
 use virtio::device::saved_state::DeviceQueueState;
 use virtio::device::saved_state::DeviceStateValidator;
 use virtio::spec::VirtioDeviceFeatures;
+use virtio_resources::fs::microvm::VirtioFsOwner;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -83,6 +85,8 @@ impl VirtioFsDevice {
 
     /// Creates the fixed no-DAX microVM HostFs device directly from the
     /// `Microvm` resource fields and its process-local host root.
+    ///
+    /// Every guest request runs as the OpenVMM process identity.
     pub fn new_microvm_hostfs(
         driver_source: &VmTaskDriverSource,
         stable_id: String,
@@ -92,6 +96,36 @@ impl VirtioFsDevice {
         root_path: impl AsRef<Path>,
         notify_corruption: Option<Arc<dyn Fn() + Sync + Send>>,
     ) -> anyhow::Result<Self> {
+        Self::new_microvm_hostfs_with_owner(
+            driver_source,
+            stable_id,
+            root_identity,
+            read_only,
+            denied_paths,
+            root_path,
+            VirtioFsOwner::Process,
+            notify_corruption,
+        )
+    }
+
+    /// Creates the fixed no-DAX microVM HostFs device like
+    /// [`Self::new_microvm_hostfs`], selecting the host identity that
+    /// performs guest requests.
+    ///
+    /// [`VirtioFsOwner::Caller`] requires Linux, an export root owned by a
+    /// non-root user and group, and permission to perform requests as that
+    /// owner.
+    #[expect(clippy::too_many_arguments)]
+    pub fn new_microvm_hostfs_with_owner(
+        driver_source: &VmTaskDriverSource,
+        stable_id: String,
+        root_identity: Vec<u8>,
+        read_only: bool,
+        denied_paths: Vec<String>,
+        root_path: impl AsRef<Path>,
+        owner: VirtioFsOwner,
+        notify_corruption: Option<Arc<dyn Fn() + Sync + Send>>,
+    ) -> anyhow::Result<Self> {
         let profile = MicroVmVirtioFsProfile::from_attachment(
             stable_id,
             root_identity,
@@ -99,7 +133,13 @@ impl VirtioFsDevice {
             denied_paths,
         )?;
         let fs = VirtioFs::new_microvm(root_path, profile.clone())?;
-        Self::new_microvm(driver_source, profile, fs, notify_corruption)
+        let caller_identity = match owner {
+            VirtioFsOwner::Process => None,
+            VirtioFsOwner::Caller => Some(CallerIdentity::for_attachment(&fs)?),
+        };
+        let mut device = Self::new_microvm(driver_source, profile, fs, notify_corruption)?;
+        device.caller_identity = caller_identity;
+        Ok(device)
     }
 }
 

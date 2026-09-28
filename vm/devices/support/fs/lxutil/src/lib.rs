@@ -25,6 +25,8 @@ use windows as sys;
 
 pub use path::PathBufExt;
 pub use path::PathExt;
+#[cfg(unix)]
+pub use unix::FsCredentials;
 
 /// A platform-independent abstraction that allows you to treat an area of the file system as if
 /// it has Unix semantics.
@@ -55,7 +57,8 @@ pub use path::PathExt;
 ///
 /// All calls pass through directly to their libc equivalent. Attributes like mode are always
 /// enabled if the file system supports them. `LxVolumeOptions` is entirely ignored, as are the
-/// `uid` and `gid` fields of `LxCreateOptions`.
+/// `uid` and `gid` fields of `LxCreateOptions`: operations run with the calling thread's
+/// filesystem credentials, which `FsCredentials` can switch temporarily.
 pub struct LxVolume {
     inner: sys::LxVolume,
 }

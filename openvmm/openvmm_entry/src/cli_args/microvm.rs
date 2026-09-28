@@ -76,6 +76,25 @@ pub enum MicrovmLifecycleCli {
     Managed,
 }
 
+/// Host identity that performs guest requests on the microVM filesystem.
+#[derive(Debug, Copy, Clone, ValueEnum, PartialEq, Eq)]
+pub enum MicrovmMountOwnerCli {
+    /// Perform every request as the OpenVMM process.
+    Process,
+    /// Perform each request as the guest caller, with guest root mapped to
+    /// the owner of the export root.
+    Caller,
+}
+
+impl From<MicrovmMountOwnerCli> for virtio_resources::fs::microvm::VirtioFsOwner {
+    fn from(value: MicrovmMountOwnerCli) -> Self {
+        match value {
+            MicrovmMountOwnerCli::Process => Self::Process,
+            MicrovmMountOwnerCli::Caller => Self::Caller,
+        }
+    }
+}
+
 /// Protocol for a localhost-to-guest port forward.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MicrovmLoopbackForwardProtocol {
@@ -335,6 +354,24 @@ pub struct MicrovmCli {
     )]
     pub microvm_mount_deny: Vec<PathBuf>,
 
+    /// Host identity that performs guest requests on `--mount`.
+    ///
+    /// `process` (the default) performs every request as the OpenVMM process.
+    /// `caller` performs each request as the guest caller's UID and GID,
+    /// without OpenVMM's supplementary groups or effective capabilities, with
+    /// guest UID and GID 0 mapped to the owner of the export root, so guest
+    /// files are owned by the guest user on the host. `caller` requires
+    /// Linux, an export root owned by a non-root user and group, and OpenVMM
+    /// running as that owner or holding CAP_SETUID and CAP_SETGID; a request
+    /// that cannot run as its caller fails with EPERM.
+    #[clap(
+        long = "mount-owner",
+        value_enum,
+        value_name = "OWNER",
+        requires = "microvm_mount"
+    )]
+    pub microvm_mount_owner: Option<MicrovmMountOwnerCli>,
+
     /// dedicated microVM control console backed by a local serial endpoint
     ///
     /// Accepts listen=\<path\> or none. The boot
@@ -469,6 +506,7 @@ impl Options {
                     && self.microvm.allow_endpoint.is_empty()
                     && self.microvm.microvm_mount.is_none()
                     && self.microvm.microvm_mount_deny.is_empty()
+                    && self.microvm.microvm_mount_owner.is_none()
                     && self.microvm.microvm_sandbox_block.is_empty()
                     && self.microvm.microvm_workload_identity.is_none()
                     && self.microvm.microvm_lifecycle.is_none()
@@ -713,6 +751,11 @@ impl Options {
         anyhow::ensure!(
             self.microvm.microvm_mount_deny.len() <= 128,
             "microVM filesystem permits at most 128 denied paths"
+        );
+        anyhow::ensure!(
+            cfg!(target_os = "linux")
+                || self.microvm.microvm_mount_owner != Some(MicrovmMountOwnerCli::Caller),
+            "--mount-owner caller requires a Linux host"
         );
         for (index, block) in self.microvm.microvm_sandbox_block.iter().enumerate() {
             anyhow::ensure!(
@@ -2157,5 +2200,87 @@ mod tests {
         assert!(MicrovmMountCli::from_str("relative,host").is_err());
         assert!(MicrovmMountCli::from_str("/mnt/../escape,host").is_err());
         assert!(MicrovmMountCli::from_str("/mnt/share,host,write").is_err());
+    }
+
+    #[test]
+    fn test_microvm_mount_owner_is_explicit_and_requires_a_mount() {
+        let default = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--mount",
+            "/mnt/share,host,rw",
+        ])
+        .unwrap();
+        assert_eq!(default.microvm.microvm_mount_owner, None);
+        default.validate_microvm_options().unwrap();
+
+        let process = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--mount",
+            "/mnt/share,host,rw",
+            "--mount-owner",
+            "process",
+        ])
+        .unwrap();
+        assert_eq!(
+            process.microvm.microvm_mount_owner,
+            Some(MicrovmMountOwnerCli::Process)
+        );
+        process.validate_microvm_options().unwrap();
+
+        let caller = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--mount",
+            "/mnt/share,host,rw",
+            "--mount-owner",
+            "caller",
+        ])
+        .unwrap();
+        assert_eq!(
+            caller.microvm.microvm_mount_owner,
+            Some(MicrovmMountOwnerCli::Caller)
+        );
+        assert_eq!(
+            virtio_resources::fs::microvm::VirtioFsOwner::from(MicrovmMountOwnerCli::Caller),
+            virtio_resources::fs::microvm::VirtioFsOwner::Caller
+        );
+        let result = caller.validate_microvm_options();
+        if cfg!(target_os = "linux") {
+            result.unwrap();
+        } else {
+            assert!(
+                result.unwrap_err().to_string().contains("Linux host"),
+                "--mount-owner caller was accepted on a non-Linux host"
+            );
+        }
+
+        for args in [
+            vec!["openvmm", "--machine", "microvm", "--mount-owner", "caller"],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--mount",
+                "/mnt/share,host,rw",
+                "--mount-owner",
+                "root",
+            ],
+        ] {
+            assert!(Options::try_parse_from(args).is_err());
+        }
+        let standard = Options::try_parse_from([
+            "openvmm",
+            "--mount",
+            "/mnt/share,host,rw",
+            "--mount-owner",
+            "caller",
+        ])
+        .unwrap();
+        assert!(standard.validate_microvm_options().is_err());
     }
 }

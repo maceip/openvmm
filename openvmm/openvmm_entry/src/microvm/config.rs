@@ -552,6 +552,12 @@ impl<'a> MicrovmConfigBuilder<'a> {
                         root_identity: filesystem.attachment.identity.clone(),
                         read_only: filesystem.config.access.is_read_only(),
                         denied_paths: filesystem.config.denied_paths.clone(),
+                        owner: self
+                            .opt
+                            .microvm
+                            .microvm_mount_owner
+                            .map(Into::into)
+                            .unwrap_or_default(),
                     },
                 )
             } else {
