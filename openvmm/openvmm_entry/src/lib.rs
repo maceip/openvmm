@@ -838,6 +838,12 @@ async fn vm_config_from_command_line(
                     host_fwd: Vec::new(),
                     gateway_loopback: false,
                     snapshot: false,
+                    egress: None,
+                    egress_allow: Vec::new(),
+                    egress_deny: Vec::new(),
+                    allow_host: Vec::new(),
+                    block_host: Vec::new(),
+                    allow_endpoint: Vec::new(),
                 },
                 max_queues: None,
                 underhill: false,
@@ -1886,7 +1892,7 @@ async fn vm_config_from_command_line(
             max_queues: vport.max_queues,
             mac_address: vport.mac_address,
             endpoint: vport.endpoint,
-            egress_policy: None,
+            egress_policy: vport.egress_policy,
             save_restore,
             static_ipv4: vport.static_ipv4,
             effective_features: None,
@@ -2388,6 +2394,71 @@ fn consomme_snapshot_identity(cidr: &str) -> anyhow::Result<(MacAddress, StaticI
     ))
 }
 
+/// Builds the run-scoped egress policy for a standard-profile consomme NIC.
+///
+/// Returns `None` when the endpoint carries no policy options, preserving the
+/// historic allow-everything behavior. Otherwise binds the policy to the
+/// deterministic guest identity derived from the CIDR (the same identity a
+/// snapshot-capable NIC uses), with host loopback allowed exactly like the
+/// microVM default. Rule semantics mirror the microVM network policy.
+fn consomme_egress_policy(
+    cidr: Option<&str>,
+    egress: Option<cli_args::ConsommeEgressActionCli>,
+    egress_allow: &[net_backend_resources::egress::EgressRule],
+    egress_deny: &[net_backend_resources::egress::EgressRule],
+    allow_host: &[net_backend_resources::egress::Ipv4Cidr],
+    block_host: &[net_backend_resources::egress::Ipv4Cidr],
+    allow_endpoint: &[net_backend_resources::egress::TcpEndpoint],
+) -> anyhow::Result<Option<net_backend_resources::egress::EgressPolicy>> {
+    use net_backend_resources::egress::EgressAction;
+    use net_backend_resources::egress::EgressPolicyMode;
+
+    let has_policy = egress.is_some()
+        || !egress_allow.is_empty()
+        || !egress_deny.is_empty()
+        || !allow_host.is_empty()
+        || !block_host.is_empty()
+        || !allow_endpoint.is_empty();
+    if !has_policy {
+        return Ok(None);
+    }
+    let cidr = cidr.context("consomme egress policy requires a CIDR")?;
+    let (guest_mac, identity) =
+        consomme_snapshot_identity(cidr).with_context(|| format!("invalid CIDR '{cidr}'"))?;
+    let action = match egress {
+        Some(cli_args::ConsommeEgressActionCli::Allow) | None => EgressAction::Allow,
+        Some(cli_args::ConsommeEgressActionCli::Deny) => EgressAction::Deny,
+    };
+    let mode = if !egress_allow.is_empty() || !egress_deny.is_empty() {
+        EgressPolicyMode::Rules {
+            default_action: action,
+            allow: egress_allow.to_vec(),
+            deny: egress_deny.to_vec(),
+        }
+    } else if !allow_host.is_empty() {
+        EgressPolicyMode::AllowList(allow_host.to_vec())
+    } else if !block_host.is_empty() {
+        EgressPolicyMode::BlockList(block_host.to_vec())
+    } else if !allow_endpoint.is_empty() {
+        EgressPolicyMode::TcpEndpoints(allow_endpoint.to_vec())
+    } else if action == EgressAction::Deny {
+        EgressPolicyMode::DenyAll
+    } else {
+        EgressPolicyMode::AllowAll
+    };
+    let policy = net_backend_resources::egress::EgressPolicy::bind(
+        identity.guest_ipv4,
+        identity.prefix_length,
+        guest_mac,
+        identity.gateway_ipv4,
+        mode,
+    )
+    .context("invalid consomme egress policy")?
+    .with_host_loopback(EgressAction::Allow, None)
+    .context("invalid consomme egress policy")?;
+    Ok(Some(policy))
+}
+
 fn parse_endpoint(
     cli_cfg: &NicConfigCli,
     index: &mut usize,
@@ -2412,13 +2483,31 @@ fn parse_endpoint(
         }
         _ => None,
     };
+    // Run-scoped egress policy for consomme endpoints that carry policy
+    // options; the virtio-net device installs it on the endpoint.
+    let mut endpoint_policy = None;
     let endpoint = match &cli_cfg.endpoint {
         EndpointConfigCli::Consomme {
             cidr,
             host_fwd,
             gateway_loopback,
+            egress,
+            egress_allow,
+            egress_deny,
+            allow_host,
+            block_host,
+            allow_endpoint,
             ..
         } => {
+            endpoint_policy = consomme_egress_policy(
+                cidr.as_deref(),
+                *egress,
+                egress_allow,
+                egress_deny,
+                allow_host,
+                block_host,
+                allow_endpoint,
+            )?;
             let ports = host_fwd
                 .iter()
                 .map(|fwd| {
@@ -2528,6 +2617,7 @@ fn parse_endpoint(
         max_queues: cli_cfg.max_queues,
         pcie_port: cli_cfg.pcie_port.clone(),
         static_ipv4,
+        egress_policy: endpoint_policy,
     })
 }
 
@@ -2540,6 +2630,7 @@ struct NicConfig {
     max_queues: Option<u16>,
     pcie_port: Option<String>,
     static_ipv4: Option<StaticIpv4Config>,
+    egress_policy: Option<net_backend_resources::egress::EgressPolicy>,
 }
 
 impl NicConfig {

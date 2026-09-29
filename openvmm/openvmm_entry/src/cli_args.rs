@@ -873,6 +873,13 @@ options:
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
     /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
     /// expose the NIC over emulated PCIe at the specified port.
+    ///
+    /// The consomme backend accepts an egress policy with the microVM rule
+    /// language (e.g. `consomme:192.168.127.0/24,egress=deny` or
+    /// `consomme:192.168.127.0/24,egress=deny,egress-allow=192.0.2.7:tcp:443`).
+    /// A policy needs a CIDR so the guest identity it binds to is
+    /// deterministic; `ingress=deny` is accepted and `ingress=allow` is
+    /// rejected.
     #[clap(long)]
     pub virtio_net: Vec<NicConfigCli>,
 
@@ -2845,6 +2852,12 @@ pub enum EndpointConfigCli {
         host_fwd: Vec<HostPortConfigCli>,
         gateway_loopback: bool,
         snapshot: bool,
+        egress: Option<ConsommeEgressActionCli>,
+        egress_allow: Vec<net_backend_resources::egress::EgressRule>,
+        egress_deny: Vec<net_backend_resources::egress::EgressRule>,
+        allow_host: Vec<net_backend_resources::egress::Ipv4Cidr>,
+        block_host: Vec<net_backend_resources::egress::Ipv4Cidr>,
+        allow_endpoint: Vec<net_backend_resources::egress::TcpEndpoint>,
     },
     Dio {
         id: Option<String>,
@@ -2869,6 +2882,29 @@ pub struct HostPortConfigCli {
 pub enum HostPortProtocolCli {
     Tcp,
     Udp,
+}
+
+/// Default egress action for a standard-profile consomme endpoint.
+///
+/// Mirrors the microVM `--network-egress` values with the same rule language.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ConsommeEgressActionCli {
+    Allow,
+    Deny,
+}
+
+impl FromStr for ConsommeEgressActionCli {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "allow" => Ok(Self::Allow),
+            "deny" => Ok(Self::Deny),
+            _ => Err(format!(
+                "invalid consomme egress action '{s}', expected 'allow' or 'deny'"
+            )),
+        }
+    }
 }
 
 fn parse_hostfwd(s: &str) -> Result<HostPortConfigCli, String> {
@@ -2946,6 +2982,68 @@ fn parse_addr_port(s: &str) -> Result<(Option<std::net::IpAddr>, u16), String> {
     }
 }
 
+/// Validates standard-profile consomme egress policy options.
+///
+/// Mirrors the microVM network policy rules with the same option semantics:
+/// L3/L4 rules need an explicit default, legacy shorthand lists cannot be
+/// combined with rules, and a policy needs a CIDR so the guest identity the
+/// policy binds to is deterministic.
+fn validate_consomme_egress(
+    cidr: Option<&str>,
+    egress: Option<ConsommeEgressActionCli>,
+    egress_allow: &[net_backend_resources::egress::EgressRule],
+    egress_deny: &[net_backend_resources::egress::EgressRule],
+    allow_host: &[net_backend_resources::egress::Ipv4Cidr],
+    block_host: &[net_backend_resources::egress::Ipv4Cidr],
+    allow_endpoint: &[net_backend_resources::egress::TcpEndpoint],
+) -> Result<(), String> {
+    let has_policy = egress.is_some()
+        || !egress_allow.is_empty()
+        || !egress_deny.is_empty()
+        || !allow_host.is_empty()
+        || !block_host.is_empty()
+        || !allow_endpoint.is_empty();
+    if has_policy && cidr.is_none() {
+        return Err(
+            "consomme egress policy requires a CIDR (e.g. consomme:192.168.127.0/24,egress=deny)"
+                .to_owned(),
+        );
+    }
+    if (!egress_allow.is_empty() || !egress_deny.is_empty()) && egress.is_none() {
+        return Err(
+            "consomme egress=allow|deny is required with egress-allow or egress-deny rules"
+                .to_owned(),
+        );
+    }
+    if egress_allow.len() > 256 || egress_deny.len() > 256 {
+        return Err(
+            "consomme egress policy permits at most 256 allow rules and 256 deny rules".to_owned(),
+        );
+    }
+    if (!egress_allow.is_empty() || !egress_deny.is_empty())
+        && (!allow_host.is_empty() || !block_host.is_empty() || !allow_endpoint.is_empty())
+    {
+        return Err(
+            "consomme egress-allow/egress-deny rules cannot be combined with allow-host, block-host, or allow-endpoint"
+                .to_owned(),
+        );
+    }
+    if egress == Some(ConsommeEgressActionCli::Allow)
+        && (!allow_host.is_empty() || !allow_endpoint.is_empty())
+    {
+        return Err(
+            "consomme egress=allow conflicts with default-deny allow-host or allow-endpoint lists"
+                .to_owned(),
+        );
+    }
+    if egress == Some(ConsommeEgressActionCli::Deny) && !block_host.is_empty() {
+        return Err(
+            "consomme egress=deny conflicts with default-allow block-host lists".to_owned(),
+        );
+    }
+    Ok(())
+}
+
 impl FromStr for EndpointConfigCli {
     type Err = String;
 
@@ -2958,6 +3056,12 @@ impl FromStr for EndpointConfigCli {
                 let mut host_fwd = Vec::new();
                 let mut gateway_loopback = false;
                 let mut snapshot = false;
+                let mut egress = None;
+                let mut egress_allow = Vec::new();
+                let mut egress_deny = Vec::new();
+                let mut allow_host = Vec::new();
+                let mut block_host = Vec::new();
+                let mut allow_endpoint = Vec::new();
                 for opt in remaining.split(',').filter(|s| !s.is_empty()) {
                     if let Some(fwd) = opt.strip_prefix("hostfwd=") {
                         host_fwd.push(parse_hostfwd(fwd)?);
@@ -2965,17 +3069,66 @@ impl FromStr for EndpointConfigCli {
                         gateway_loopback = true;
                     } else if opt == "snapshot" {
                         snapshot = true;
+                    } else if let Some(action) = opt.strip_prefix("egress=") {
+                        if egress.is_some() {
+                            return Err("duplicate consomme option 'egress'".to_owned());
+                        }
+                        egress = Some(action.parse()?);
+                    } else if let Some(rule) = opt.strip_prefix("egress-allow=") {
+                        egress_allow.push(rule.parse().map_err(|err| {
+                            format!("invalid consomme egress-allow rule '{rule}': {err}")
+                        })?);
+                    } else if let Some(rule) = opt.strip_prefix("egress-deny=") {
+                        egress_deny.push(rule.parse().map_err(|err| {
+                            format!("invalid consomme egress-deny rule '{rule}': {err}")
+                        })?);
+                    } else if let Some(prefix) = opt.strip_prefix("allow-host=") {
+                        allow_host.push(prefix.parse().map_err(|err| {
+                            format!("invalid consomme allow-host prefix '{prefix}': {err}")
+                        })?);
+                    } else if let Some(prefix) = opt.strip_prefix("block-host=") {
+                        block_host.push(prefix.parse().map_err(|err| {
+                            format!("invalid consomme block-host prefix '{prefix}': {err}")
+                        })?);
+                    } else if let Some(endpoint) = opt.strip_prefix("allow-endpoint=") {
+                        allow_endpoint.push(endpoint.parse().map_err(|err| {
+                            format!(
+                                "invalid consomme allow-endpoint '{endpoint}': {err}"
+                            )
+                        })?);
+                    } else if let Some(action) = opt.strip_prefix("ingress=") {
+                        if action != "deny" {
+                            return Err(
+                                "consomme ingress allow is unsupported; inbound traffic is denied except for hostfwd forwards"
+                                    .to_owned(),
+                            );
+                        }
                     } else if cidr.is_none() {
                         cidr = Some(opt.to_owned());
                     } else {
                         return Err(format!("unexpected consomme option '{opt}'"));
                     }
                 }
+                validate_consomme_egress(
+                    cidr.as_deref(),
+                    egress,
+                    &egress_allow,
+                    &egress_deny,
+                    &allow_host,
+                    &block_host,
+                    &allow_endpoint,
+                )?;
                 EndpointConfigCli::Consomme {
                     cidr,
                     host_fwd,
                     gateway_loopback,
                     snapshot,
+                    egress,
+                    egress_allow,
+                    egress_deny,
+                    allow_host,
+                    block_host,
+                    allow_endpoint,
                 }
             }
             ["dio", s @ ..] => EndpointConfigCli::Dio {
@@ -4268,6 +4421,7 @@ mod tests {
                 host_fwd,
                 gateway_loopback,
                 snapshot,
+                ..
             } => {
                 assert!(host_fwd.is_empty());
                 assert!(!gateway_loopback);
@@ -4283,6 +4437,7 @@ mod tests {
                 host_fwd,
                 gateway_loopback,
                 snapshot,
+                ..
             } => {
                 assert_eq!(cidr, "192.168.0.0/24");
                 assert!(host_fwd.is_empty());
@@ -4299,6 +4454,7 @@ mod tests {
                 host_fwd,
                 gateway_loopback,
                 snapshot,
+                ..
             } => {
                 assert_eq!(cidr, Some("192.168.0.0/24".to_owned()));
                 assert!(host_fwd.is_empty());
@@ -4315,6 +4471,7 @@ mod tests {
                 host_fwd,
                 gateway_loopback,
                 snapshot,
+                ..
             } => {
                 assert_eq!(cidr, Some("192.168.0.0/24".to_owned()));
                 assert!(host_fwd.is_empty());
@@ -4326,7 +4483,7 @@ mod tests {
 
         // Test consomme with hostfwd
         match EndpointConfigCli::from_str("consomme:hostfwd=udp:127.0.0.1:5000-:5000").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false, .. } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Udp);
@@ -4342,7 +4499,7 @@ mod tests {
 
         // Test consomme with cidr and hostfwd
         match EndpointConfigCli::from_str("consomme:10.0.0.0/24,hostfwd=tcp::2222-:22").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false, .. } => {
                 assert_eq!(cidr.as_deref(), Some("10.0.0.0/24"));
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4356,7 +4513,7 @@ mod tests {
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::2222-:22,hostfwd=tcp::3389-:3389")
             .unwrap()
         {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false, .. } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 2);
                 assert_eq!(host_fwd[0].host_port, 2222);
@@ -4369,7 +4526,7 @@ mod tests {
 
         // Test consomme with different host and guest ports
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp:127.0.0.1:8080-:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false, .. } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4385,7 +4542,7 @@ mod tests {
 
         // Test consomme with guest address (accepted but ignored by backend)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::8080-10.0.0.2:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false, .. } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd[0].host_port, 8080);
                 assert_eq!(host_fwd[0].guest_port, 80);
@@ -4395,7 +4552,7 @@ mod tests {
 
         // Test consomme with IPv6 host address (bracketed)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp:[::1]:8080-:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false, .. } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4411,7 +4568,7 @@ mod tests {
 
         // Test consomme with IPv6 guest address (bracketed)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::8080-[::1]:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false } => {
+            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false, .. } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd[0].host_port, 8080);
                 assert_eq!(host_fwd[0].guest_port, 80);
@@ -4443,6 +4600,119 @@ mod tests {
 
         // Test error case
         assert!(EndpointConfigCli::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn test_consomme_egress_policy_from_str() {
+        // Egress deny-all binds to the CIDR identity.
+        match EndpointConfigCli::from_str("consomme:192.168.127.0/24,egress=deny").unwrap() {
+            EndpointConfigCli::Consomme {
+                cidr,
+                egress: Some(ConsommeEgressActionCli::Deny),
+                egress_allow,
+                egress_deny,
+                allow_host,
+                block_host,
+                allow_endpoint,
+                ..
+            } => {
+                assert_eq!(cidr, Some("192.168.127.0/24".to_owned()));
+                assert!(egress_allow.is_empty());
+                assert!(egress_deny.is_empty());
+                assert!(allow_host.is_empty());
+                assert!(block_host.is_empty());
+                assert!(allow_endpoint.is_empty());
+            }
+            _ => panic!("Expected Consomme variant with egress=deny"),
+        }
+
+        // Rules carry the microVM rule language verbatim.
+        match EndpointConfigCli::from_str(
+            "consomme:192.168.127.0/24,egress=deny,egress-allow=192.0.2.7:tcp:443,egress-deny=10.0.0.0/8",
+        )
+        .unwrap()
+        {
+            EndpointConfigCli::Consomme {
+                egress: Some(ConsommeEgressActionCli::Allow),
+                ..
+            } => panic!("Expected egress=deny"),
+            EndpointConfigCli::Consomme {
+                egress_allow,
+                egress_deny,
+                ..
+            } => {
+                assert_eq!(egress_allow.len(), 1);
+                assert_eq!(egress_deny.len(), 1);
+                assert_eq!(egress_allow[0].port(), 443);
+            }
+            _ => panic!("Expected Consomme variant with egress rules"),
+        }
+
+        // Legacy shorthand lists parse without a default action.
+        match EndpointConfigCli::from_str("consomme:192.168.127.0/24,block-host=10.0.0.0/8")
+            .unwrap()
+        {
+            EndpointConfigCli::Consomme { block_host, .. } => {
+                assert_eq!(block_host.len(), 1);
+            }
+            _ => panic!("Expected Consomme variant with block-host"),
+        }
+        match EndpointConfigCli::from_str("consomme:192.168.127.0/24,allow-endpoint=192.0.2.7:443")
+            .unwrap()
+        {
+            EndpointConfigCli::Consomme { allow_endpoint, .. } => {
+                assert_eq!(allow_endpoint.len(), 1);
+            }
+            _ => panic!("Expected Consomme variant with allow-endpoint"),
+        }
+
+        // Policy without a CIDR has no identity to bind to.
+        assert!(EndpointConfigCli::from_str("consomme:,egress=deny").is_err());
+        assert!(EndpointConfigCli::from_str("consomme:,block-host=10.0.0.0/8").is_err());
+        // Rules need an explicit default.
+        assert!(
+            EndpointConfigCli::from_str("consomme:192.168.127.0/24,egress-allow=10.0.0.0/8")
+                .is_err()
+        );
+        // Rules and legacy lists are mutually exclusive.
+        assert!(
+            EndpointConfigCli::from_str(
+                "consomme:192.168.127.0/24,egress=deny,egress-deny=10.0.0.0/8,block-host=10.0.0.0/8"
+            )
+            .is_err()
+        );
+        // Conflicting defaults are rejected like the microVM profile.
+        assert!(
+            EndpointConfigCli::from_str(
+                "consomme:192.168.127.0/24,egress=allow,allow-host=10.0.0.0/8"
+            )
+            .is_err()
+        );
+        assert!(
+            EndpointConfigCli::from_str(
+                "consomme:192.168.127.0/24,egress=deny,block-host=10.0.0.0/8"
+            )
+            .is_err()
+        );
+        // Inbound allow is unsupported; explicit deny documents intent.
+        assert!(
+            EndpointConfigCli::from_str("consomme:192.168.127.0/24,ingress=allow").is_err()
+        );
+        assert!(
+            EndpointConfigCli::from_str("consomme:192.168.127.0/24,ingress=deny").is_ok()
+        );
+        // Unknown actions and malformed rules fail closed.
+        assert!(
+            EndpointConfigCli::from_str("consomme:192.168.127.0/24,egress=sometimes").is_err()
+        );
+        assert!(
+            EndpointConfigCli::from_str("consomme:192.168.127.0/24,egress=deny,egress-deny=999.0.0.0/8")
+                .is_err()
+        );
+        assert!(
+            EndpointConfigCli::from_str("consomme:192.168.127.0/24,egress=deny,egress=allow")
+                .is_err()
+        );
     }
 
     #[test]
