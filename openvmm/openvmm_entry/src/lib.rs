@@ -752,6 +752,11 @@ async fn vm_config_from_command_line(
             .await?;
     }
 
+    // NVX macOS port: HVF/aarch64 has no PCI INT#A routing (and no VMBus
+    // guest drivers for VPCI), so plain `--virtio-blk` (no pcie_port) is
+    // attached over MMIO like `--virtio-net` below instead of VPCI.
+    // Collected here, attached after `add_virtio_device` is defined.
+    let mut macos_mmio_blk: Vec<(Resource<DiskHandleKind>, bool)> = Vec::new();
     for &cli_args::DiskCli {
         vtl,
         ref kind,
@@ -767,6 +772,16 @@ async fn vm_config_from_command_line(
     {
         if underhill.is_some() {
             anyhow::bail!("underhill not supported with virtio-blk");
+        }
+        if cfg!(target_os = "macos") && pcie_port.is_none() {
+            if vtl != DeviceVtl::Vtl0 {
+                anyhow::bail!("virtio-blk only supported for VTL0");
+            }
+            if is_dvd {
+                anyhow::bail!("dvd not supported with virtio-blk");
+            }
+            macos_mmio_blk.push((disk_open(kind, read_only).await?, read_only));
+            continue;
         }
         storage
             .add(
@@ -1910,6 +1925,15 @@ async fn vm_config_from_command_line(
         } else {
             add_virtio_device(VirtioBusCli::Auto, resource);
         }
+    }
+
+    // NVX macOS port: attach the collected virtio-blk disks over MMIO
+    // (see the collection site above for why VPCI is unavailable).
+    for (disk, read_only) in macos_mmio_blk {
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::blk::VirtioBlkHandle { disk, read_only }
+                .into_resource();
+        add_virtio_device(VirtioBusCli::Mmio, resource);
     }
 
     for args in &opt.virtio_fs {
