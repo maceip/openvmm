@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+
 //! Stateless fast-fail replies to canonical denied IPv4 TCP/UDP traffic.
 use crate::egress::EgressPolicy;
 use crate::egress::EgressPolicyMode;

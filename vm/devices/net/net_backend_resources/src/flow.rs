@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+
 //! Host-only packet decisions. No payload, header strings, or credentials enter this log.
 use std::fs::{File, OpenOptions};
 use std::io::Write;
