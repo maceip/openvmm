@@ -4,7 +4,6 @@
 //! Bounded local outcome reporting for direct microVM runs.
 
 use crate::cli_args::Options;
-use crate::cli_args::microvm::MachineProfileCli;
 use crate::cli_args::microvm::MicrovmLifecycleCli;
 use crate::cli_args::microvm::MicrovmNetworkActionCli;
 use crate::meshworker::VmmMesh;
@@ -70,10 +69,6 @@ impl MicrovmReportPlan {
         let Some(path) = &opt.microvm.microvm_report else {
             return Ok(None);
         };
-        anyhow::ensure!(
-            opt.machine == MachineProfileCli::Microvm,
-            "--microvm-report requires a microVM machine"
-        );
         let path = if path.is_absolute() {
             path.clone()
         } else {
@@ -95,14 +90,19 @@ impl MicrovmReportPlan {
             .and_then(|value| value.split(':').next())
             .unwrap_or("auto");
         anyhow::ensure!(
-            matches!(backend, "auto" | "kvm" | "mshv" | "whp"),
+            matches!(
+                backend,
+                "auto" | "kvm" | "mshv" | "whp" | "hvf" | "hypervisor-framework"
+            ),
             "microVM report backend category is unsupported"
         );
         let operation = if opt.restore_snapshot.is_some() {
             "restore"
         } else if opt.microvm.snapshot_destination.is_some() {
             "capture"
-        } else if opt.microvm.microvm_lifecycle == Some(MicrovmLifecycleCli::Managed) {
+        } else if opt.microvm.microvm_lifecycle == Some(MicrovmLifecycleCli::Managed)
+            || opt.microvm.microvm_control_console.is_some()
+        {
             "managed"
         } else {
             "run"

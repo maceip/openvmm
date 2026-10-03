@@ -535,7 +535,7 @@ async fn vm_config_from_command_line(
         "debugcon",
     )?;
 
-    let virtio_console_backend = if microvm.is_active() {
+    let virtio_console_backend = if microvm.is_active() || microvm.has_control_console() {
         microvm.setup_virtio_consoles(&console_state, &serial_driver)?
     } else if let Some(serial_cfg) = opt.virtio_console.clone() {
         setup_serial("virtio-console", serial_cfg, "hvc0")?
@@ -852,6 +852,7 @@ async fn vm_config_from_command_line(
                     cidr: None,
                     host_fwd: Vec::new(),
                     gateway_loopback: false,
+                    gateway_proxy: None,
                     snapshot: false,
                     egress: None,
                     egress_allow: Vec::new(),
@@ -1931,8 +1932,7 @@ async fn vm_config_from_command_line(
     // (see the collection site above for why VPCI is unavailable).
     for (disk, read_only) in macos_mmio_blk {
         let resource: Resource<VirtioDeviceHandle> =
-            virtio_resources::blk::VirtioBlkHandle { disk, read_only }
-                .into_resource();
+            virtio_resources::blk::VirtioBlkHandle { disk, read_only }.into_resource();
         add_virtio_device(VirtioBusCli::Mmio, resource);
     }
 
@@ -2023,7 +2023,7 @@ async fn vm_config_from_command_line(
     if let Some(backend) = virtio_console_backend {
         let resource: Resource<VirtioDeviceHandle> =
             microvm.virtio_console_handle(backend).into_resource();
-        if microvm.is_active() {
+        if microvm.is_active() || arch == MachineArch::Aarch64 {
             add_virtio_device(VirtioBusCli::Mmio, resource);
         } else if let Some(pcie_port) = &opt.virtio_console_pcie_port {
             pcie_devices.push(PcieDeviceConfig {
@@ -2496,9 +2496,10 @@ fn parse_endpoint(
             cidr: Some(cidr),
             snapshot: true,
             ..
-        } => Some(consomme_snapshot_identity(cidr).with_context(|| {
-            format!("invalid CIDR '{cidr}' for snapshot-capable NIC")
-        })?),
+        } => Some(
+            consomme_snapshot_identity(cidr)
+                .with_context(|| format!("invalid CIDR '{cidr}' for snapshot-capable NIC"))?,
+        ),
         EndpointConfigCli::Consomme { snapshot: true, .. } => {
             bail!(
                 "snapshot-capable consomme NICs require a CIDR \
@@ -2515,6 +2516,7 @@ fn parse_endpoint(
             cidr,
             host_fwd,
             gateway_loopback,
+            gateway_proxy,
             egress,
             egress_allow,
             egress_deny,
@@ -2532,6 +2534,20 @@ fn parse_endpoint(
                 block_host,
                 allow_endpoint,
             )?;
+            if let Some(port) = gateway_proxy {
+                let (_, identity) =
+                    consomme_snapshot_identity(cidr.as_deref().context("proxy requires CIDR")?)?;
+                let proxy = format!("{}:{port}", identity.gateway_ipv4).parse()?;
+                endpoint_policy = Some(
+                    endpoint_policy
+                        .take()
+                        .context("proxy requires egress policy")?
+                        .with_host_loopback(
+                            net_backend_resources::egress::EgressAction::Deny,
+                            Some(proxy),
+                        )?,
+                );
+            }
             let ports = host_fwd
                 .iter()
                 .map(|fwd| {
@@ -2565,12 +2581,8 @@ fn parse_endpoint(
                 ports,
                 recv,
                 allow_host_local_access: None,
-                map_gateway_to_host_loopback: if *gateway_loopback {
-                    Some(true)
-                } else {
-                    None
-                },
-                gateway_loopback_proxy_port: None,
+                map_gateway_to_host_loopback: if *gateway_loopback { Some(true) } else { None },
+                gateway_loopback_proxy_port: *gateway_proxy,
             }
             .into_resource()
         }
@@ -2618,6 +2630,17 @@ fn parse_endpoint(
     // the static IPv4 contract; otherwise pick a random MAC address.
     let (mac_address, static_ipv4) = match snapshot_identity {
         Some((mac, config)) => (mac, Some(config)),
+        None if endpoint_policy.is_some() => {
+            // The policy authenticates source Ethernet identity as well as
+            // IPv4. Bind the NIC to the same MAC even without snapshot mode.
+            let EndpointConfigCli::Consomme {
+                cidr: Some(cidr), ..
+            } = &cli_cfg.endpoint
+            else {
+                unreachable!("Consomme egress policy requires a CIDR");
+            };
+            (consomme_snapshot_identity(cidr)?.0, None)
+        }
         None => {
             let mut random = [0x00, 0x15, 0x5D, 0, 0, 0];
             getrandom::fill(&mut random[3..]).expect("rng failure");

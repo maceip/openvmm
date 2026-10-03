@@ -9,8 +9,8 @@ use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredWrite;
-use chipset_device::mmio::MmioIntercept;
 use chipset_device::io::deferred::defer_write;
+use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
 use futures::AsyncRead;
@@ -490,8 +490,9 @@ impl SaveRestore for MicrovmShutdown {
 ///
 /// ARM guests have no ISA port space, so the classic 0x604 shutdown port is
 /// unreachable there. This device exposes the same contract through one
-/// fixed MMIO page: any write delivers its first byte as the process exit
-/// code (reads return all-ones, like the port). The guest address is
+/// fixed MMIO page: a write to offset zero delivers its first byte as the
+/// process exit code. An eight-byte read at offset eight samples current host
+/// Unix time in seconds; other reads return all-ones. The guest address is
 /// [`MmioShutdown::MMIO_BASE`]; it sits in the aarch64 architectural
 /// reserved window, clear of the GIC, PL011, and MSI frame allocations, so
 /// the memory layout engine never hands it out.
@@ -499,6 +500,9 @@ impl SaveRestore for MicrovmShutdown {
 pub struct MmioShutdown {
     #[inspect(skip)]
     power_request: PowerRequestClient,
+    generation_id: [u8; 16],
+    #[inspect(skip)]
+    entropy: [u8; 32],
 }
 
 impl MmioShutdown {
@@ -509,7 +513,15 @@ impl MmioShutdown {
 
     /// Creates the shutdown device.
     pub fn new(power_request: PowerRequestClient) -> Self {
-        Self { power_request }
+        let mut generation_id = [0; 16];
+        getrandom::fill(&mut generation_id).expect("rng failure");
+        let mut entropy = [0; 32];
+        getrandom::fill(&mut entropy).expect("rng failure");
+        Self {
+            power_request,
+            generation_id,
+            entropy,
+        }
     }
 }
 
@@ -526,12 +538,40 @@ impl ChipsetDevice for MmioShutdown {
 }
 
 impl MmioIntercept for MmioShutdown {
-    fn mmio_read(&mut self, _addr: u64, data: &mut [u8]) -> IoResult {
+    fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
+        // The trusted outer agent samples wall time at boot and after restore.
+        // Workloads have neither /dev/mem nor this page in their device namespace.
+        if addr == Self::MMIO_BASE + 8 && data.len() == 8 {
+            let seconds = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            data.copy_from_slice(&seconds.to_le_bytes());
+            return IoResult::Ok;
+        }
+        if matches!(addr, a if a == Self::MMIO_BASE + 16 || a == Self::MMIO_BASE + 24)
+            && data.len() == 8
+        {
+            let offset = (addr - Self::MMIO_BASE - 16) as usize;
+            data.copy_from_slice(&self.generation_id[offset..offset + 8]);
+            return IoResult::Ok;
+        }
+        if data.len() == 8
+            && (Self::MMIO_BASE + 32..Self::MMIO_BASE + 64).contains(&addr)
+            && addr.is_multiple_of(8)
+        {
+            let offset = (addr - Self::MMIO_BASE - 32) as usize;
+            data.copy_from_slice(&self.entropy[offset..offset + 8]);
+            return IoResult::Ok;
+        }
         data.fill(0xff);
         IoResult::Ok
     }
 
-    fn mmio_write(&mut self, _addr: u64, data: &[u8]) -> IoResult {
+    fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
+        if addr != Self::MMIO_BASE {
+            return IoResult::Ok;
+        }
         self.power_request
             .power_request(PowerRequest::PowerOffWithStatus {
                 code: data.first().copied().unwrap_or(0),
@@ -540,8 +580,10 @@ impl MmioIntercept for MmioShutdown {
     }
 
     fn get_static_regions(&mut self) -> &[(&str, RangeInclusive<u64>)] {
-        static REGIONS: [(&str, RangeInclusive<u64>); 1] =
-            [("nvx-exit", MmioShutdown::MMIO_BASE..=MmioShutdown::MMIO_BASE + MmioShutdown::MMIO_LEN - 1)];
+        static REGIONS: [(&str, RangeInclusive<u64>); 1] = [(
+            "nvx-exit",
+            MmioShutdown::MMIO_BASE..=MmioShutdown::MMIO_BASE + MmioShutdown::MMIO_LEN - 1,
+        )];
         &REGIONS
     }
 }
@@ -554,6 +596,8 @@ impl SaveRestore for MmioShutdown {
     }
 
     fn restore(&mut self, NoSavedState: Self::SavedState) -> Result<(), RestoreError> {
+        getrandom::fill(&mut self.generation_id).expect("rng failure");
+        getrandom::fill(&mut self.entropy).expect("rng failure");
         Ok(())
     }
 }
@@ -1261,6 +1305,46 @@ mod tests {
         assert_eq!(portb.rx_buffer, [0x44, 0x5a]);
         assert!(matches!(portb.io_read(DATA_PORT, &mut data), IoResult::Ok));
         assert_eq!(data, [0x44]);
+    }
+
+    #[test]
+    fn arm_clock_samples_host_and_exit_preserves_status() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        let mut device = MmioShutdown::new((move |request| captured.lock().push(request)).into());
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut clock = [0; 8];
+        assert!(matches!(
+            device.mmio_read(MmioShutdown::MMIO_BASE + 8, &mut clock),
+            IoResult::Ok
+        ));
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!((before..=after).contains(&u64::from_le_bytes(clock)));
+        let original_generation = device.generation_id;
+        let original_entropy = device.entropy;
+        let saved = device.save().unwrap();
+        device.restore(saved).unwrap();
+        assert_ne!(device.generation_id, original_generation);
+        assert_ne!(device.entropy, original_entropy);
+        assert_ne!(device.generation_id, [0; 16]);
+        assert_ne!(device.entropy, [0; 32]);
+        // Unsupported access widths must not expose a partial timestamp.
+        let mut invalid = [0; 4];
+        let _ = device.mmio_read(MmioShutdown::MMIO_BASE + 8, &mut invalid);
+        assert_eq!(invalid, [0xff; 4]);
+        let _ = device.mmio_write(MmioShutdown::MMIO_BASE + 8, &[99]);
+        assert!(requests.lock().is_empty());
+        let _ = device.mmio_write(MmioShutdown::MMIO_BASE, &[37]);
+        assert_eq!(
+            *requests.lock(),
+            [PowerRequest::PowerOffWithStatus { code: 37 }]
+        );
     }
 
     #[test]

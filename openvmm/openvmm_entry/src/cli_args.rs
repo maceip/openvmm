@@ -2851,6 +2851,7 @@ pub enum EndpointConfigCli {
         cidr: Option<String>,
         host_fwd: Vec<HostPortConfigCli>,
         gateway_loopback: bool,
+        gateway_proxy: Option<u16>,
         snapshot: bool,
         egress: Option<ConsommeEgressActionCli>,
         egress_allow: Vec<net_backend_resources::egress::EgressRule>,
@@ -3055,6 +3056,7 @@ impl FromStr for EndpointConfigCli {
                 let mut cidr = None;
                 let mut host_fwd = Vec::new();
                 let mut gateway_loopback = false;
+                let mut gateway_proxy = None;
                 let mut snapshot = false;
                 let mut egress = None;
                 let mut egress_allow = Vec::new();
@@ -3067,6 +3069,15 @@ impl FromStr for EndpointConfigCli {
                         host_fwd.push(parse_hostfwd(fwd)?);
                     } else if opt == "gwloopback" {
                         gateway_loopback = true;
+                    } else if let Some(value) = opt.strip_prefix("gwproxy=") {
+                        if gateway_proxy.is_some() {
+                            return Err("duplicate consomme gwproxy option".to_owned());
+                        }
+                        let port: u16 = value.parse().map_err(|_| "invalid gwproxy port")?;
+                        if port == 0 {
+                            return Err("gwproxy port must be nonzero".to_owned());
+                        }
+                        gateway_proxy = Some(port);
                     } else if opt == "snapshot" {
                         snapshot = true;
                     } else if let Some(action) = opt.strip_prefix("egress=") {
@@ -3092,9 +3103,7 @@ impl FromStr for EndpointConfigCli {
                         })?);
                     } else if let Some(endpoint) = opt.strip_prefix("allow-endpoint=") {
                         allow_endpoint.push(endpoint.parse().map_err(|err| {
-                            format!(
-                                "invalid consomme allow-endpoint '{endpoint}': {err}"
-                            )
+                            format!("invalid consomme allow-endpoint '{endpoint}': {err}")
                         })?);
                     } else if let Some(action) = opt.strip_prefix("ingress=") {
                         if action != "deny" {
@@ -3118,10 +3127,18 @@ impl FromStr for EndpointConfigCli {
                     &block_host,
                     &allow_endpoint,
                 )?;
+                if gateway_proxy.is_some()
+                    && (gateway_loopback
+                        || cidr.is_none()
+                        || egress != Some(ConsommeEgressActionCli::Deny))
+                {
+                    return Err("gwproxy requires a CIDR, egress=deny and no gwloopback".to_owned());
+                }
                 EndpointConfigCli::Consomme {
                     cidr,
                     host_fwd,
                     gateway_loopback,
+                    gateway_proxy,
                     snapshot,
                     egress,
                     egress_allow,
@@ -4483,7 +4500,13 @@ mod tests {
 
         // Test consomme with hostfwd
         match EndpointConfigCli::from_str("consomme:hostfwd=udp:127.0.0.1:5000-:5000").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false, .. } => {
+            EndpointConfigCli::Consomme {
+                cidr,
+                host_fwd,
+                gateway_loopback: false,
+                snapshot: false,
+                ..
+            } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Udp);
@@ -4499,7 +4522,13 @@ mod tests {
 
         // Test consomme with cidr and hostfwd
         match EndpointConfigCli::from_str("consomme:10.0.0.0/24,hostfwd=tcp::2222-:22").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false, .. } => {
+            EndpointConfigCli::Consomme {
+                cidr,
+                host_fwd,
+                gateway_loopback: false,
+                snapshot: false,
+                ..
+            } => {
                 assert_eq!(cidr.as_deref(), Some("10.0.0.0/24"));
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4513,7 +4542,13 @@ mod tests {
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::2222-:22,hostfwd=tcp::3389-:3389")
             .unwrap()
         {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false, .. } => {
+            EndpointConfigCli::Consomme {
+                cidr,
+                host_fwd,
+                gateway_loopback: false,
+                snapshot: false,
+                ..
+            } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 2);
                 assert_eq!(host_fwd[0].host_port, 2222);
@@ -4526,7 +4561,13 @@ mod tests {
 
         // Test consomme with different host and guest ports
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp:127.0.0.1:8080-:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false, .. } => {
+            EndpointConfigCli::Consomme {
+                cidr,
+                host_fwd,
+                gateway_loopback: false,
+                snapshot: false,
+                ..
+            } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4542,7 +4583,13 @@ mod tests {
 
         // Test consomme with guest address (accepted but ignored by backend)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::8080-10.0.0.2:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false, .. } => {
+            EndpointConfigCli::Consomme {
+                cidr,
+                host_fwd,
+                gateway_loopback: false,
+                snapshot: false,
+                ..
+            } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd[0].host_port, 8080);
                 assert_eq!(host_fwd[0].guest_port, 80);
@@ -4552,7 +4599,13 @@ mod tests {
 
         // Test consomme with IPv6 host address (bracketed)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp:[::1]:8080-:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false, .. } => {
+            EndpointConfigCli::Consomme {
+                cidr,
+                host_fwd,
+                gateway_loopback: false,
+                snapshot: false,
+                ..
+            } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd.len(), 1);
                 assert_eq!(host_fwd[0].protocol, HostPortProtocolCli::Tcp);
@@ -4568,7 +4621,13 @@ mod tests {
 
         // Test consomme with IPv6 guest address (bracketed)
         match EndpointConfigCli::from_str("consomme:hostfwd=tcp::8080-[::1]:80").unwrap() {
-            EndpointConfigCli::Consomme { cidr, host_fwd, gateway_loopback: false, snapshot: false, .. } => {
+            EndpointConfigCli::Consomme {
+                cidr,
+                host_fwd,
+                gateway_loopback: false,
+                snapshot: false,
+                ..
+            } => {
                 assert!(cidr.is_none());
                 assert_eq!(host_fwd[0].host_port, 8080);
                 assert_eq!(host_fwd[0].guest_port, 80);
@@ -4600,6 +4659,29 @@ mod tests {
 
         // Test error case
         assert!(EndpointConfigCli::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn test_consomme_gateway_proxy_scope() {
+        let endpoint =
+            EndpointConfigCli::from_str("consomme:192.168.127.0/24,egress=deny,gwproxy=8443")
+                .unwrap();
+        assert!(matches!(
+            endpoint,
+            EndpointConfigCli::Consomme {
+                gateway_proxy: Some(8443),
+                gateway_loopback: false,
+                ..
+            }
+        ));
+        for invalid in [
+            "consomme:192.168.127.0/24,egress=allow,gwproxy=8443",
+            "consomme:192.168.127.0/24,egress=deny,gwloopback,gwproxy=8443",
+            "consomme:192.168.127.0/24,egress=deny,gwproxy=0",
+            "consomme:192.168.127.0/24,egress=deny,gwproxy=8443,gwproxy=8444",
+        ] {
+            assert!(EndpointConfigCli::from_str(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]
@@ -4695,19 +4777,15 @@ mod tests {
             .is_err()
         );
         // Inbound allow is unsupported; explicit deny documents intent.
-        assert!(
-            EndpointConfigCli::from_str("consomme:192.168.127.0/24,ingress=allow").is_err()
-        );
-        assert!(
-            EndpointConfigCli::from_str("consomme:192.168.127.0/24,ingress=deny").is_ok()
-        );
+        assert!(EndpointConfigCli::from_str("consomme:192.168.127.0/24,ingress=allow").is_err());
+        assert!(EndpointConfigCli::from_str("consomme:192.168.127.0/24,ingress=deny").is_ok());
         // Unknown actions and malformed rules fail closed.
+        assert!(EndpointConfigCli::from_str("consomme:192.168.127.0/24,egress=sometimes").is_err());
         assert!(
-            EndpointConfigCli::from_str("consomme:192.168.127.0/24,egress=sometimes").is_err()
-        );
-        assert!(
-            EndpointConfigCli::from_str("consomme:192.168.127.0/24,egress=deny,egress-deny=999.0.0.0/8")
-                .is_err()
+            EndpointConfigCli::from_str(
+                "consomme:192.168.127.0/24,egress=deny,egress-deny=999.0.0.0/8"
+            )
+            .is_err()
         );
         assert!(
             EndpointConfigCli::from_str("consomme:192.168.127.0/24,egress=deny,egress=allow")

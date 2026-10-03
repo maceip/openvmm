@@ -22,6 +22,7 @@ use super::fs::copy_exact;
 use super::fs::create_hard_link_from_handle;
 use super::fs::create_private_directory;
 use super::fs::ensure_path_absent;
+use super::fs::file_sha256;
 use super::fs::hard_link_is_unsupported;
 use super::fs::open_file_with_length;
 use super::fs::open_regular_file;
@@ -35,6 +36,7 @@ use super::fs::verify_hard_link_identity;
 use super::fs::write_bytes;
 use super::microvm;
 use anyhow::Context;
+use sha2::Digest;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -305,10 +307,10 @@ fn stage_snapshot(
 
         let mut published_manifest = manifest.clone();
         published_manifest.state_size_bytes = saved_state_bytes.len() as u64;
-        // Current local snapshots use strict structure, length, generation,
-        // and machine-contract checks without RAM-sized in-band hashing.
-        published_manifest.state_sha256.clear();
-        published_manifest.memory_sha256.clear();
+        // Version 6 binds the payloads as well as the machine contract.
+        published_manifest.state_sha256 = sha2::Sha256::digest(saved_state_bytes).to_vec();
+        published_manifest.memory_sha256 =
+            file_sha256(memory_file, manifest.memory_size_bytes, MEMORY_FILE_NAME)?.to_vec();
 
         let manifest_bytes = mesh::payload::encode(published_manifest);
         anyhow::ensure!(

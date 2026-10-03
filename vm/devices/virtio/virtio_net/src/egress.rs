@@ -50,6 +50,9 @@ impl Worker {
         packet_prefix: &[u8],
         packet_len: u32,
     ) -> Result<(), TxPacketError> {
+        if self.endpoint_handles_denials {
+            return Ok(());
+        }
         if let Some(policy) = &self.egress_policy {
             policy
                 .authorize_frame(packet_prefix, packet_len as usize)

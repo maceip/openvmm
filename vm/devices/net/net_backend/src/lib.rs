@@ -107,6 +107,13 @@ pub trait Endpoint: Send + Sync + InspectMut {
         Ok(())
     }
 
+    /// Whether denied frames must reach the endpoint for a locally generated
+    /// rejection. The endpoint still enforces policy on immutable bytes before
+    /// any external transmission.
+    fn handles_egress_denials(&self) -> bool {
+        false
+    }
+
     /// Stops the endpoint.
     ///
     /// All queues returned via `get_queues` must have been dropped.

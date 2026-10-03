@@ -187,7 +187,7 @@ impl SerialIo for SocketSerialBackend {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn local_peer_identity(socket: &Socket) -> io::Result<Option<LocalPeerIdentity>> {
     use std::os::fd::AsFd;
 
@@ -199,7 +199,7 @@ fn local_peer_identity(socket: &Socket) -> io::Result<Option<LocalPeerIdentity>>
     )))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn local_peer_identity(_socket: &Socket) -> io::Result<Option<LocalPeerIdentity>> {
     Ok(None)
 }
@@ -260,7 +260,7 @@ impl AsyncWrite for SocketSerialBackend {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
     use test_with_tracing::test;

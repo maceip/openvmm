@@ -16,6 +16,7 @@ use super::format::SNAPSHOT_RESTORE_POLICY_RESUME;
 use super::format::STATE_FILE_NAME;
 use super::format::validate_manifest_header;
 use super::format::validate_manifest_version;
+use super::format::{validate_sha256, verify_digest};
 use super::fs::OpenedFileGeneration;
 use super::fs::OpenedSnapshotDirectory;
 use super::fs::allocated_file_bytes;
@@ -68,6 +69,18 @@ impl OpenedSnapshot {
             state_bytes.len(),
             manifest.state_size_bytes,
         );
+
+        if manifest.version >= 6 {
+            validate_sha256(&manifest.state_sha256, STATE_FILE_NAME)?;
+            validate_sha256(&manifest.memory_sha256, MEMORY_FILE_NAME)?;
+            verify_digest(&state_bytes, &manifest.state_sha256, STATE_FILE_NAME)?;
+            verify_file_digest(
+                &memory_file,
+                manifest.memory_size_bytes,
+                &manifest.memory_sha256,
+                MEMORY_FILE_NAME,
+            )?;
+        }
 
         let memory_generation = opened_file_generation(&memory_file, MEMORY_FILE_NAME)?;
         anyhow::ensure!(
@@ -291,6 +304,17 @@ pub fn read_snapshot_artifacts_with_memory(
         MEMORY_FILE_NAME,
     )?;
 
+    if manifest.version >= 6 {
+        validate_sha256(&manifest.state_sha256, STATE_FILE_NAME)?;
+        validate_sha256(&manifest.memory_sha256, MEMORY_FILE_NAME)?;
+        verify_digest(&state_bytes, &manifest.state_sha256, STATE_FILE_NAME)?;
+        verify_file_digest(
+            &memory_file,
+            manifest.memory_size_bytes,
+            &manifest.memory_sha256,
+            MEMORY_FILE_NAME,
+        )?;
+    }
     Ok((state_bytes, memory_file))
 }
 
@@ -466,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn read_snapshot_accepts_same_length_state_change_without_legacy_checksum_validation() {
+    fn read_snapshot_rejects_same_length_state_change() {
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
         let mem_path = dir.path().join("memory.bin");
@@ -474,12 +498,17 @@ mod tests {
         write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
         std::fs::write(snap_dir.join(STATE_FILE_NAME), b"other").unwrap();
 
-        let (_, state) = read_snapshot(&snap_dir, 1024).unwrap();
-        assert_eq!(state, b"other");
+        assert!(
+            read_snapshot(&snap_dir, 1024)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("state.bin SHA-256 digest mismatch")
+        );
     }
 
     #[test]
-    fn read_snapshot_accepts_same_length_memory_change_without_legacy_checksum_validation() {
+    fn read_snapshot_rejects_same_length_memory_change() {
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
         let mem_path = dir.path().join("memory.bin");
@@ -487,10 +516,13 @@ mod tests {
         write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
         std::fs::write(snap_dir.join(MEMORY_FILE_NAME), vec![1_u8; 1024]).unwrap();
 
-        let (_, _, mut memory) = read_snapshot_with_memory(&snap_dir, 1024).unwrap();
-        let mut bytes = Vec::new();
-        memory.read_to_end(&mut bytes).unwrap();
-        assert_eq!(bytes, vec![1_u8; 1024]);
+        assert!(
+            read_snapshot_with_memory(&snap_dir, 1024)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("memory.bin SHA-256 digest mismatch")
+        );
     }
 
     #[test]

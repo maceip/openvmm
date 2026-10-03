@@ -584,6 +584,7 @@ dependencies = [
  "chipset_device_resources",
  "chipset_resources",
  "futures",
+ "getrandom 0.4.2",
  "input_core",
  "inspect",
  "inspect_counters",

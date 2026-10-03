@@ -21,7 +21,8 @@ impl ReplLaunch {
     pub(crate) fn from_options(opt: &Options) -> Self {
         Self {
             restore_ready_pending: opt.paused && opt.restore_ready_path.is_some(),
-            stdin_enabled: !opt.microvm.microvm_control_auth_stdin,
+            stdin_enabled: !opt.microvm.microvm_control_auth_stdin
+                || opt.microvm.microvm_control_repl,
         }
     }
 }

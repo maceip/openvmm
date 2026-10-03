@@ -102,9 +102,9 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 .transpose()?
                 .unwrap_or(true)
         } else {
-            false
+            opt.microvm.microvm_mount.is_some()
         };
-        let filesystem = if active {
+        let filesystem = if active || filesystem_slot {
             effective_microvm_filesystem(
                 opt.microvm.microvm_mount.as_ref(),
                 &opt.microvm.microvm_mount_deny,
@@ -138,12 +138,12 @@ impl<'a> MicrovmConfigBuilder<'a> {
             bail!("microVM does not expose UART, debugcon, or VMBus serial");
         }
 
-        let console = if active {
+        let console = if active || opt.microvm.microvm_control_console.is_some() {
             effective_microvm_console(opt.virtio_console.as_ref(), restore_machine_contract)?
         } else {
             None
         };
-        let control_console = if active {
+        let control_console = if active || opt.microvm.microvm_control_console.is_some() {
             effective_microvm_control_console(
                 opt.microvm.microvm_control_console.as_ref(),
                 restore_machine_contract,
@@ -223,6 +223,11 @@ impl<'a> MicrovmConfigBuilder<'a> {
     /// Returns whether the microVM machine profile is selected.
     pub(crate) fn is_active(&self) -> bool {
         self.active
+    }
+
+    /// Standard direct-boot guests use the same authenticated control transport.
+    pub(crate) fn has_control_console(&self) -> bool {
+        self.control_console.is_some()
     }
 
     /// Returns the backend used for `--com1` when it is not specified.
@@ -311,10 +316,10 @@ impl<'a> MicrovmConfigBuilder<'a> {
                         ),
                     )?)
                 }
-                SerialConfigCli::Console => {
+                SerialConfigCli::Console | SerialConfigCli::Stderr => {
                     let (backend, _) = setup_host_console(
                         "virtio-console",
-                        SerialConfigCli::Console,
+                        serial_cfg,
                         "hvc1",
                         console_state,
                         serial_driver,
@@ -655,10 +660,15 @@ impl<'a> MicrovmConfigBuilder<'a> {
             .filesystem
             .as_ref()
             .map(|filesystem| filesystem.config.clone());
-        cfg.microvm.filesystem_bootstrap = restore_machine_contract
-            .map(|contract| contract.microvm_filesystem.is_some())
-            .unwrap_or_else(|| microvm_filesystem.is_some());
-        cfg.microvm.filesystem = microvm_filesystem;
+        cfg.microvm.filesystem_bootstrap = self.active
+            && restore_machine_contract
+                .map(|contract| contract.microvm_filesystem.is_some())
+                .unwrap_or_else(|| microvm_filesystem.is_some());
+        cfg.microvm.filesystem = if self.active {
+            microvm_filesystem
+        } else {
+            None
+        };
         cfg.microvm.memory_capacity = restore_machine_contract
             .and_then(|contract| {
                 (contract.memory_expansion_version != 0).then_some(contract.memory_capacity_bytes)

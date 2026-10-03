@@ -15,7 +15,7 @@ pub mod restore;
 pub use publish::write_snapshot;
 
 /// Current manifest format version. Bump when making incompatible changes.
-pub const MANIFEST_VERSION: u32 = 5;
+pub const MANIFEST_VERSION: u32 = 6;
 
 /// Manifest describing a VM snapshot.
 #[derive(Clone, Protobuf)]
@@ -45,10 +45,10 @@ pub struct SnapshotManifest {
     /// Length of `state.bin` in bytes.
     #[mesh(8)]
     pub state_size_bytes: u64,
-    /// Legacy v2 SHA-256 digest of `state.bin`; empty in v3 through v5.
+    /// SHA-256 digest of `state.bin` in v2 and v6; empty in v3 through v5.
     #[mesh(9)]
     pub state_sha256: Vec<u8>,
-    /// Legacy v2 SHA-256 digest of `memory.bin`; empty in v3 through v5.
+    /// SHA-256 digest of `memory.bin` in v2 and v6; empty in v3 through v5.
     #[mesh(10)]
     pub memory_sha256: Vec<u8>,
     /// Authoritative machine composition for versioned machine profiles.
@@ -172,8 +172,8 @@ mod tests {
         assert_eq!(read_manifest.vp_count, manifest.vp_count);
         assert_eq!(read_manifest.architecture, manifest.architecture);
         assert_eq!(read_manifest.state_size_bytes, state.len() as u64);
-        assert!(read_manifest.state_sha256.is_empty());
-        assert!(read_manifest.memory_sha256.is_empty());
+        assert_eq!(read_manifest.state_sha256.len(), 32);
+        assert_eq!(read_manifest.memory_sha256.len(), 32);
         assert_eq!(read_state, state);
 
         // memory.bin should exist in the snapshot directory.

@@ -142,17 +142,17 @@ pub const O_TRUNC: i32 = 0x000200;
 pub const O_APPEND: i32 = 0x000400;
 
 // xtask-fmt allow-target-arch sys-crate
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
 pub const O_DIRECTORY: i32 = 0x010000;
 // xtask-fmt allow-target-arch sys-crate
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
 pub const O_NOFOLLOW: i32 = 0x020000;
 
 // xtask-fmt allow-target-arch sys-crate
-#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+#[cfg(target_arch = "arm")]
 pub const O_DIRECTORY: i32 = 0x004000;
 // xtask-fmt allow-target-arch sys-crate
-#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+#[cfg(target_arch = "arm")]
 pub const O_NOFOLLOW: i32 = 0x008000;
 
 pub const O_NOATIME: i32 = 0x040000;

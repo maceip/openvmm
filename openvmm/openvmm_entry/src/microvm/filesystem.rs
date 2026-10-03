@@ -88,7 +88,19 @@ fn canonical_microvm_filesystem_root(
     let (identity_kind, identity) = {
         use std::os::unix::fs::MetadataExt as _;
         let mut identity = b"openvmm-microvm-fs-unix-v1\0".to_vec();
-        identity.extend_from_slice(&metadata.dev().to_le_bytes());
+        #[cfg(target_os = "macos")]
+        let device = {
+            let major = libc::major(metadata.dev() as libc::dev_t) as u64;
+            let minor = libc::minor(metadata.dev() as libc::dev_t) as u64;
+            // The opened volume returns Linux stat device encoding.
+            ((major & 0xfff) << 8)
+                | ((major & !0xfff) << 32)
+                | (minor & 0xff)
+                | ((minor & 0xffff_ff00) << 12)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let device = metadata.dev();
+        identity.extend_from_slice(&device.to_le_bytes());
         identity.extend_from_slice(&metadata.ino().to_le_bytes());
         ("unix-device-inode-v1", identity)
     };
@@ -443,6 +455,12 @@ mod tests {
     use openvmm_defs::microvm::build_microvm_command_line;
     use test_with_tracing::test;
 
+    // Darwin exposes its temporary directory through /var -> /private/var.
+    // Pin a canonical parent so positive fixtures satisfy the export contract.
+    fn canonical_tempdir() -> tempfile::TempDir {
+        tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
+    }
+
     fn filesystem_contract(
         root: &Path,
     ) -> openvmm_helpers::snapshot::microvm::SnapshotMachineContract {
@@ -561,7 +579,7 @@ mod tests {
 
     #[test]
     fn filesystem_denied_paths_are_canonical_and_root_scoped() {
-        let root = tempfile::tempdir().unwrap();
+        let root = canonical_tempdir();
         let secrets = root.path().join("secrets");
         std::fs::create_dir(&secrets).unwrap();
         let options = Options::try_parse_from([
@@ -574,6 +592,7 @@ mod tests {
             secrets.to_str().unwrap(),
         ])
         .unwrap();
+        #[cfg(guest_arch = "x86_64")]
         options.validate_microvm_options().unwrap();
         let filesystem = effective_microvm_filesystem(
             options.microvm.microvm_mount.as_ref(),
@@ -584,7 +603,7 @@ mod tests {
         .unwrap();
         assert_eq!(filesystem.config.denied_paths, vec!["secrets".to_owned()]);
 
-        let outside = tempfile::tempdir().unwrap();
+        let outside = canonical_tempdir();
         assert!(
             canonical_microvm_filesystem_denied_paths(root.path(), &[outside.path().to_owned()])
                 .is_err()
@@ -597,7 +616,7 @@ mod tests {
 
     #[test]
     fn filesystem_restore_requires_same_live_root_identity() {
-        let root = tempfile::tempdir().unwrap();
+        let root = canonical_tempdir();
         let contract = filesystem_contract(root.path());
         let options = restore_mount_options(root.path(), "ro");
         let restored = effective_microvm_filesystem(
@@ -610,7 +629,7 @@ mod tests {
         assert_eq!(restored.config.guest_mount_target, "/mnt/share");
         assert_eq!(restored.attachment, contract.attachments[0]);
 
-        let replacement = tempfile::tempdir().unwrap();
+        let replacement = canonical_tempdir();
         let replacement_options = restore_mount_options(replacement.path(), "ro");
         assert!(
             effective_microvm_filesystem(
@@ -624,7 +643,7 @@ mod tests {
 
     #[test]
     fn filesystem_restore_rejects_same_root_at_a_new_path() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = canonical_tempdir();
         let original = parent.path().join("original");
         let moved = parent.path().join("moved");
         fs_err::create_dir(&original).unwrap();
@@ -644,7 +663,7 @@ mod tests {
 
     #[test]
     fn filesystem_restore_rejects_missing_or_changed_policy() {
-        let root = tempfile::tempdir().unwrap();
+        let root = canonical_tempdir();
         let contract = filesystem_contract(root.path());
         assert!(effective_microvm_filesystem(None, &[], Some(&contract)).is_err());
 
@@ -671,7 +690,7 @@ mod tests {
 
     #[test]
     fn filesystem_restore_attaches_mount_to_dormant_slot() {
-        let root = tempfile::tempdir().unwrap();
+        let root = canonical_tempdir();
         let contract = dormant_filesystem_contract();
         let options = restore_mount_options(root.path(), "rw");
         let filesystem = effective_microvm_filesystem(
@@ -694,7 +713,7 @@ mod tests {
 
     #[test]
     fn filesystem_restore_rejects_mount_for_legacy_snapshot_without_slot() {
-        let root = tempfile::tempdir().unwrap();
+        let root = canonical_tempdir();
         let contract = network_contract();
         let options = restore_mount_options(root.path(), "ro");
         let error = match effective_microvm_filesystem(
@@ -714,14 +733,14 @@ mod tests {
 
     #[test]
     fn filesystem_root_rejects_parent_components() {
-        let root = tempfile::tempdir().unwrap();
+        let root = canonical_tempdir();
         assert!(canonical_microvm_filesystem_root(&root.path().join("child").join("..")).is_err());
     }
 
     #[cfg(unix)]
     #[test]
     fn filesystem_root_rejects_symbolic_link_components() {
-        let root = tempfile::tempdir().unwrap();
+        let root = canonical_tempdir();
         let target = root.path().join("target");
         fs_err::create_dir(&target).unwrap();
         let link = root.path().join("link");
@@ -731,7 +750,7 @@ mod tests {
 
     #[test]
     fn filesystem_export_rejects_snapshot_and_memory_storage() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = canonical_tempdir();
         let root = parent.path().join("share");
         fs_err::create_dir(&root).unwrap();
         let memory = root.join("memory.bin");

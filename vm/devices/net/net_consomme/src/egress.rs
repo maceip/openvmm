@@ -19,6 +19,7 @@ use net_backend_resources::egress::EgressPolicy;
 impl ConsommeEndpoint {
     /// Implements `set_egress_policy`.
     pub(crate) fn install_egress_policy(&mut self, policy: EgressPolicy) -> anyhow::Result<()> {
+        net_backend_resources::flow::initialize()?;
         self.endpoint_state
             .lock()
             .as_mut()
@@ -84,8 +85,46 @@ impl ConsommeQueue {
                         .map(|policy| policy.authorize_frame(&buffer, buffer.len()))
                 })
                 .flatten();
-            if policy_result.is_some_and(|result| result.is_err()) {
+            if offset == packet_len {
+                net_backend_resources::flow::record(
+                    &buffer,
+                    !policy_result.is_some_and(|result| result.is_err()),
+                );
+            }
+            let fast_fail = std::env::var_os("NVX_NETWORK_LEGACY_DROP").is_none();
+            let neighbor = fast_fail
+                && self
+                    .endpoint_state
+                    .as_ref()
+                    .and_then(|state| state.egress_policy.as_ref())
+                    .is_some_and(|policy| policy.permits_denial_neighbor(&buffer));
+            if policy_result.is_some_and(|result| result.is_err()) && !neighbor {
+                tracing::debug!(?policy_result, "egress policy denied guest frame");
                 self.stats.tx_dropped.increment();
+                if fast_fail
+                    && let Some(reply) = self
+                        .endpoint_state
+                        .as_ref()
+                        .and_then(|state| state.egress_policy.as_ref())
+                        .and_then(|policy| policy.denial_reply(&buffer))
+                {
+                    consomme::Client::recv(
+                        &mut crate::Client {
+                            state: &mut self.state,
+                            stats: &mut self.stats,
+                            driver: &self.driver,
+                            pool,
+                        },
+                        &reply,
+                        &ChecksumState {
+                            ipv4: false,
+                            tcp: false,
+                            udp: false,
+                            tso: None,
+                            gso: None,
+                        },
+                    );
+                }
             } else if offset == packet_len
                 && let Err(error) =
                     self.with_consomme(pool, |consomme| consomme.send(&buffer, &checksum))

@@ -4,12 +4,18 @@
 //! The LxUtil crate provides an API that allows you to write the same file system code on Windows
 //! and Linux, using Linux semantics on both platforms (subject to the limitations of the underlying
 //! file system).
+//!
+//! On macOS, exports use descriptor-pinned paths and the unprivileged host owner.
+//! Symlink creation, special nodes and extended attributes are unsupported, and
+//! case sensitivity and set-ID behavior follow the underlying Darwin filesystem.
 
-#![cfg(any(windows, target_os = "linux"))]
+#![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #![expect(clippy::field_reassign_with_default)] // protocol code benefits from imperative field assignment
 
+#[cfg(target_os = "macos")]
+mod macos;
 mod path;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod unix;
 #[cfg(windows)]
 mod windows;
@@ -18,14 +24,18 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::Path;
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
+use macos as sys;
+#[cfg(target_os = "linux")]
 use unix as sys;
 #[cfg(windows)]
 use windows as sys;
 
+#[cfg(target_os = "macos")]
+pub use macos::FsCredentials;
 pub use path::PathBufExt;
 pub use path::PathExt;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub use unix::FsCredentials;
 
 /// A platform-independent abstraction that allows you to treat an area of the file system as if
@@ -1415,6 +1425,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn metadata() {
         let env = TestEnv::with_options(LxVolumeOptions::new().metadata(true));
         let file = env
@@ -1595,6 +1606,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn symlink() {
         let env = TestEnv::new();
         env.create_file("testdir/testfile", "foo");
@@ -1617,6 +1629,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn unlink() {
         let env = TestEnv::new();
         env.create_file("testfile", "test");
@@ -1742,6 +1755,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn kill_priv() {
         let env = TestEnv::with_options(LxVolumeOptions::new().metadata(true));
         let file = env
@@ -2019,6 +2033,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn xattr() {
         fn names(bytes: &[u8]) -> Vec<&[u8]> {
             let mut names: Vec<_> = bytes.split_inclusive(|&byte| byte == 0).collect();
@@ -2168,7 +2183,7 @@ mod tests {
     // the case sensitive directory attribute, which is only enabled if the WSL optional component
     // is installed.
     #[test]
-    #[cfg(not(all(windows, feature = "ci")))]
+    #[cfg(not(any(target_os = "macos", all(windows, feature = "ci"))))]
     fn case_sensitive() {
         let env = TestEnv::with_options(LxVolumeOptions::new().create_case_sensitive_dirs(true));
 

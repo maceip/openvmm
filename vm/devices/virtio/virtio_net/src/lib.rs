@@ -237,6 +237,7 @@ struct Adapter {
     mac_address: MacAddress,
     tx_offload_support: TxOffloadSupport,
     egress_policy: Option<EgressPolicy>,
+    endpoint_handles_denials: bool,
     save_restore: Option<saved_state::SaveRestoreConfig>,
 }
 
@@ -651,6 +652,7 @@ impl NicBuilder {
             mac_address,
             tx_offload_support,
             egress_policy: self.egress_policy,
+            endpoint_handles_denials: endpoint.handles_egress_denials(),
             save_restore: self.save_restore,
         });
 
@@ -748,6 +750,7 @@ impl Device {
             negotiated_features,
             negotiated_features_bank1,
             egress_policy: self.adapter.egress_policy.clone(),
+            endpoint_handles_denials: self.adapter.endpoint_handles_denials,
         };
         let coordinator = self.coordinator.state_mut().unwrap();
         let worker_task = &mut coordinator.workers[idx];
@@ -957,6 +960,7 @@ struct Worker {
     negotiated_features_bank1: NetworkFeaturesBank1,
     #[inspect(skip)]
     egress_policy: Option<EgressPolicy>,
+    endpoint_handles_denials: bool,
 }
 
 impl Worker {

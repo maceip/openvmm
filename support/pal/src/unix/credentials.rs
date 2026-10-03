@@ -46,3 +46,16 @@ pub fn unix_socket_peer_user_id(socket: BorrowedFd<'_>) -> io::Result<u32> {
     }
     Ok(credentials.uid)
 }
+
+/// macOS authenticates Unix socket peers using the kernel's effective UID.
+#[cfg(target_os = "macos")]
+pub fn unix_socket_peer_user_id(socket: std::os::fd::BorrowedFd<'_>) -> std::io::Result<u32> {
+    use std::os::fd::AsRawFd;
+    let mut uid = 0;
+    let mut gid = 0;
+    // SAFETY: the borrowed descriptor is live and both outputs are writable.
+    if unsafe { libc::getpeereid(socket.as_raw_fd(), &mut uid, &mut gid) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(uid)
+}

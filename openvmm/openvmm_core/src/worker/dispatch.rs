@@ -1247,8 +1247,7 @@ impl InitializedVm {
         // a Linux-direct boot; `restore_linux_direct_boot` preserves the
         // save-time layout so RAM lands at the same guest addresses.
         let ram_start_address = if cfg!(guest_arch = "aarch64")
-            && (matches!(cfg.load_mode, LoadMode::Linux { .. })
-                || cfg.restore_linux_direct_boot)
+            && (matches!(cfg.load_mode, LoadMode::Linux { .. }) || cfg.restore_linux_direct_boot)
         {
             1024 * 1024 * 1024 // 1 GiB
         } else {
@@ -2144,18 +2143,20 @@ impl InitializedVm {
         // port) over a fixed MMIO page. A guest write delivers its first
         // byte as the process exit code.
         #[cfg(guest_arch = "aarch64")]
-        chipset_builder.arc_mutex_device("nvx-exit").add(|_services| {
-            let halt = halt_vps.clone();
-            chipset::microvm::MmioShutdown::new(
-                (move |request: power_resources::PowerRequest| match request {
-                    power_resources::PowerRequest::PowerOffWithStatus { code } => {
-                        halt.halt(HaltReason::PowerOffWithStatus { code })
-                    }
-                    _ => halt.halt(HaltReason::PowerOff),
-                })
-                .into(),
-            )
-        })?;
+        chipset_builder
+            .arc_mutex_device("nvx-exit")
+            .add(|_services| {
+                let halt = halt_vps.clone();
+                chipset::microvm::MmioShutdown::new(
+                    (move |request: power_resources::PowerRequest| match request {
+                        power_resources::PowerRequest::PowerOffWithStatus { code } => {
+                            halt.halt(HaltReason::PowerOffWithStatus { code })
+                        }
+                        _ => halt.halt(HaltReason::PowerOff),
+                    })
+                    .into(),
+                )
+            })?;
 
         // Add the x86 BSP's LINTs for the PIC to use.
         #[cfg(guest_arch = "x86_64")]

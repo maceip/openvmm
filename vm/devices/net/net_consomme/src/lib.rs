@@ -429,6 +429,10 @@ impl net_backend::Endpoint for ConsommeEndpoint {
         Ok(())
     }
 
+    fn handles_egress_denials(&self) -> bool {
+        true
+    }
+
     fn set_egress_policy(&mut self, policy: EgressPolicy) -> anyhow::Result<()> {
         self.install_egress_policy(policy)
     }

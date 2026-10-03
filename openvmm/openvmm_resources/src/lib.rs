@@ -105,7 +105,7 @@ vm_resource::register_static_resolvers! {
     virtio_blk::resolver::VirtioBlkResolver,
     virtio_console::resolver::control::VirtioControlConsoleResolver,
     virtio_console::resolver::VirtioConsoleResolver,
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     virtiofs::resolver::VirtioFsResolver,
     #[cfg(any(windows, target_os = "linux"))]
     virtio_p9::resolver::VirtioPlan9Resolver,

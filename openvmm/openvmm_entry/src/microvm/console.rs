@@ -276,11 +276,16 @@ fn microvm_console_attachment_from_cli_with_identity(
                 },
             )
         }
-        SerialConfigCli::Console => (
-            SerialConfigCli::Console,
+        SerialConfigCli::Console | SerialConfigCli::Stderr => (
+            config.clone(),
             VirtioConsoleBackendKind::Inherited,
             "provider",
-            "console".to_owned(),
+            if matches!(config, SerialConfigCli::Stderr) {
+                "stderr"
+            } else {
+                "console"
+            }
+            .to_owned(),
             VirtioConsoleAttachmentMode::Inherited,
             VirtioConsoleReconnectPolicy::RequireInheritedAttachment,
             "require-inherited-attachment",
@@ -675,17 +680,17 @@ pub(super) fn microvm_control_broker_config(
             opt.microvm.microvm_control_auth_stdin,
             "live microVM control console requires --microvm-control-auth-stdin"
         );
-        #[cfg(any(target_os = "linux", windows))]
+        #[cfg(any(unix, windows))]
         {
-            serial_io::microvm::read_control_capability_from_stdin()
+            serial_io::microvm::read_control_capability_from_stdin(opt.microvm.microvm_control_repl)
                 .context("failed to read control-console authentication capability from stdin")?
         }
-        #[cfg(not(any(target_os = "linux", windows)))]
+        #[cfg(not(any(unix, windows)))]
         {
             anyhow::bail!("secure live microVM control consoles are unavailable on this platform")
         }
     };
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     let expected_peer_identity =
         serial_core::LocalPeerIdentity::UnixUid(pal::unix::effective_user_id());
     #[cfg(windows)]
@@ -696,7 +701,7 @@ pub(super) fn microvm_control_broker_config(
         serial_core::LocalPeerIdentity::windows_sid(bytes, length)
             .context("failed to encode the OpenVMM process user SID")?
     };
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(unix, windows)))]
     let expected_peer_identity = serial_core::LocalPeerIdentity::Unsupported;
 
     Ok(

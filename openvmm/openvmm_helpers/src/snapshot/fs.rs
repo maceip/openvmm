@@ -1115,6 +1115,7 @@ pub fn file_sha256(
     let mut file = file
         .try_clone()
         .with_context(|| format!("failed to duplicate {description} handle"))?;
+    let original_position = file.stream_position()?;
     file.seek(SeekFrom::Start(0))
         .with_context(|| format!("failed to rewind {description}"))?;
     let actual_length = file
@@ -1148,6 +1149,7 @@ pub fn file_sha256(
         total == expected_length,
         "{description} changed while it was being hashed"
     );
+    file.seek(SeekFrom::Start(original_position))?;
     Ok(digest.finalize().to_vec())
 }
 

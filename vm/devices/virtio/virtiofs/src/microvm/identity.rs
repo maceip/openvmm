@@ -62,6 +62,15 @@ impl CallerIdentity {
 
     /// Returns the host user and group that perform a guest caller's request.
     pub(crate) fn map(&self, uid: lx::uid_t, gid: lx::gid_t) -> (lx::uid_t, lx::gid_t) {
+        // Darwin does not provide Linux fsuid/capability impersonation to an
+        // unprivileged VMM. The declared export is owned by the VMM user;
+        // all guest callers use that non-root identity within its pinned root.
+        #[cfg(target_os = "macos")]
+        {
+            let _ = (uid, gid);
+            return (self.squash_uid, self.squash_gid);
+        }
+        #[cfg(not(target_os = "macos"))]
         (
             if uid == 0 { self.squash_uid } else { uid },
             if gid == 0 { self.squash_gid } else { gid },
@@ -85,6 +94,9 @@ impl CallerIdentity {
     }
 
     fn enter(&self, uid: lx::uid_t, gid: lx::gid_t) -> lx::Result<CallerCredentials> {
+        if uid == lx::UID_INVALID || gid == lx::GID_INVALID {
+            return Err(lx::Error::EINVAL);
+        }
         let (uid, gid) = self.map(uid, gid);
         #[cfg(unix)]
         {
@@ -150,9 +162,14 @@ mod tests {
             squash_gid: 1002,
         };
         assert_eq!(identity.map(0, 0), (1001, 1002));
-        assert_eq!(identity.map(1234, 0), (1234, 1002));
-        assert_eq!(identity.map(0, 5678), (1001, 5678));
-        assert_eq!(identity.map(1234, 5678), (1234, 5678));
+        #[cfg(target_os = "macos")]
+        assert_eq!(identity.map(1234, 5678), (1001, 1002));
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(identity.map(1234, 0), (1234, 1002));
+            assert_eq!(identity.map(0, 5678), (1001, 5678));
+            assert_eq!(identity.map(1234, 5678), (1234, 5678));
+        }
     }
 
     #[cfg(windows)]
@@ -205,7 +222,7 @@ mod tests {
         );
 
         let other = identity.enter_request(&request(FUSE_GETATTR, 0x7fff_fff0, 0x7fff_fff0));
-        if running_as_root {
+        if running_as_root || cfg!(target_os = "macos") {
             assert!(other.unwrap().is_some());
         } else {
             assert_eq!(other.err(), Some(lx::Error::EPERM));

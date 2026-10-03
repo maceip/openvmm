@@ -375,12 +375,12 @@ pub enum InvalidEgressPolicy {
 /// Egress policy bound to one static microVM link.
 #[derive(Clone, Debug, PartialEq, Eq, MeshPayload)]
 pub struct EgressPolicy {
-    guest_ipv4: Ipv4Addr,
+    pub(crate) guest_ipv4: Ipv4Addr,
     prefix_length: u8,
-    guest_mac: MacAddress,
-    gateway_ipv4: Ipv4Addr,
-    next_hops: Vec<Ipv4Addr>,
-    mode: EgressPolicyMode,
+    pub(crate) guest_mac: MacAddress,
+    pub(crate) gateway_ipv4: Ipv4Addr,
+    pub(crate) next_hops: Vec<Ipv4Addr>,
+    pub(crate) mode: EgressPolicyMode,
     host_loopback: EgressAction,
     proxy_endpoint: Option<TcpEndpoint>,
 }

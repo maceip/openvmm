@@ -3,20 +3,20 @@
 
 //! Local serial endpoints and capability input of the microVM control console.
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use serial_socket::net::OpenSocketSerialConfig;
 use std::fs::File;
 use std::io;
 #[cfg(any(unix, windows))]
 use std::io::Read;
 use std::path::Path;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use unix_socket::UnixListener;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::SerialBackendHandle;
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub fn bind_control_serial(path: &Path) -> io::Result<Resource<SerialBackendHandle>> {
     use std::os::unix::fs::FileTypeExt;
     use std::os::unix::fs::MetadataExt;
@@ -107,7 +107,7 @@ pub fn bind_control_serial(path: &Path) -> io::Result<Resource<SerialBackendHand
     Ok(OpenWindowsPipeSerialConfig::from(pipe).into_resource())
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(unix, windows)))]
 pub fn bind_control_serial(_path: &Path) -> io::Result<Resource<SerialBackendHandle>> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -117,7 +117,12 @@ pub fn bind_control_serial(_path: &Path) -> io::Result<Resource<SerialBackendHan
 
 /// Consumes a one-way pipe containing exactly one nonzero 32-byte control capability.
 #[cfg(any(unix, windows))]
-pub fn read_control_capability(mut file: File) -> io::Result<[u8; 32]> {
+pub fn read_control_capability(file: File) -> io::Result<[u8; 32]> {
+    read_control_capability_framed(file, false)
+}
+
+#[cfg(any(unix, windows))]
+fn read_control_capability_framed(mut file: File, repl: bool) -> io::Result<[u8; 32]> {
     const CONTROL_CAPABILITY_LEN: usize = 32;
 
     #[cfg(unix)]
@@ -174,6 +179,22 @@ pub fn read_control_capability(mut file: File) -> io::Result<[u8; 32]> {
         }
     }
 
+    if repl {
+        if capability == [0; CONTROL_CAPABILITY_LEN] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "control authentication capability must not be zero",
+            ));
+        }
+        #[cfg(unix)]
+        pal::unix::pipe::set_nonblocking(&file, false)?;
+        #[cfg(windows)]
+        {
+            use pal::windows::pipe::PipeExt as _;
+            file.set_pipe_mode(windows_sys::Win32::System::Pipes::PIPE_WAIT)?;
+        }
+        return Ok(capability);
+    }
     let mut trailing = [0u8; 1];
     loop {
         match file.read(&mut trailing) {
@@ -237,24 +258,24 @@ fn control_pipe_is_closed(error: &io::Error) -> bool {
 }
 
 /// Reads the prepared authentication pipe without taking ownership of descriptor 0.
-#[cfg(target_os = "linux")]
-pub fn read_control_capability_from_stdin() -> io::Result<[u8; 32]> {
+#[cfg(unix)]
+pub fn read_control_capability_from_stdin(repl: bool) -> io::Result<[u8; 32]> {
     use std::os::fd::AsFd;
 
     let stdin = io::stdin();
-    read_control_capability(File::from(stdin.as_fd().try_clone_to_owned()?))
+    read_control_capability_framed(File::from(stdin.as_fd().try_clone_to_owned()?), repl)
 }
 
 /// Reads the prepared authentication pipe without taking ownership of handle 0.
 #[cfg(windows)]
-pub fn read_control_capability_from_stdin() -> io::Result<[u8; 32]> {
+pub fn read_control_capability_from_stdin(repl: bool) -> io::Result<[u8; 32]> {
     use std::os::windows::io::AsHandle as _;
 
     let stdin = io::stdin();
-    read_control_capability(File::from(stdin.as_handle().try_clone_to_owned()?))
+    read_control_capability_framed(File::from(stdin.as_handle().try_clone_to_owned()?), repl)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
     use std::io::Write as _;
@@ -270,6 +291,21 @@ mod tests {
             drop(write);
         }
         read_control_capability(read)
+    }
+
+    #[test]
+    fn framed_auth_leaves_repl_commands_unconsumed() {
+        let (read, mut write) = pal::pipe_pair().unwrap();
+        write.write_all(&[0x5a; 32]).unwrap();
+        write.write_all(b"snap fixture\n").unwrap();
+        let mut reader = read.try_clone().unwrap();
+        assert_eq!(
+            read_control_capability_framed(read, true).unwrap(),
+            [0x5a; 32]
+        );
+        let mut remaining = [0; 13];
+        reader.read_exact(&mut remaining).unwrap();
+        assert_eq!(&remaining, b"snap fixture\n");
     }
 
     #[test]
@@ -325,7 +361,7 @@ mod tests {
         let Some(expected) = std::env::var_os("OPENVMM_TEST_CONTROL_STDIN") else {
             return;
         };
-        let result = read_control_capability_from_stdin();
+        let result = read_control_capability_from_stdin(false);
         match expected.to_str().unwrap() {
             "valid" => {
                 let mut capability = [0x5a; 32];

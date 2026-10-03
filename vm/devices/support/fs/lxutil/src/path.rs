@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 #[cfg(unix)]
-use super::unix as sys;
+use super::sys;
 #[cfg(windows)]
 use super::windows as sys;
 use std::borrow::Cow;

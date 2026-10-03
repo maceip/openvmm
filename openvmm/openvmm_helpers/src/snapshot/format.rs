@@ -12,7 +12,9 @@ use mesh::payload::Timestamp;
 use sha2::Digest;
 
 /// Magic identifying the OpenVMM snapshot manifest format.
-pub const SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V5\0";
+pub const SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V6\0";
+const VERSION_5_MANIFEST_VERSION: u32 = 5;
+const VERSION_5_SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V5\0";
 const VERSION_4_MANIFEST_VERSION: u32 = 4;
 const VERSION_4_SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V4\0";
 pub(super) const PREVIOUS_MANIFEST_VERSION: u32 = 3;
@@ -113,6 +115,7 @@ pub(super) fn validate_manifest_header(manifest: &SnapshotManifest) -> anyhow::R
         LEGACY_MANIFEST_VERSION => LEGACY_SNAPSHOT_FORMAT_MAGIC,
         PREVIOUS_MANIFEST_VERSION => PREVIOUS_SNAPSHOT_FORMAT_MAGIC,
         VERSION_4_MANIFEST_VERSION => VERSION_4_SNAPSHOT_FORMAT_MAGIC,
+        VERSION_5_MANIFEST_VERSION => VERSION_5_SNAPSHOT_FORMAT_MAGIC,
         MANIFEST_VERSION => SNAPSHOT_FORMAT_MAGIC,
         version => anyhow::bail!(
             "snapshot manifest version {version} is not supported (expected {LEGACY_MANIFEST_VERSION} through {MANIFEST_VERSION})"
@@ -136,7 +139,7 @@ pub(super) fn validate_manifest_header(manifest: &SnapshotManifest) -> anyhow::R
 }
 
 pub(super) fn validate_manifest_version(manifest: &SnapshotManifest) -> anyhow::Result<()> {
-    if manifest.version < MANIFEST_VERSION {
+    if manifest.version < VERSION_5_MANIFEST_VERSION {
         anyhow::ensure!(
             manifest.snapshot_tier.is_empty()
                 && manifest.restore_policy.is_empty()
@@ -162,7 +165,7 @@ pub(super) fn validate_manifest_version(manifest: &SnapshotManifest) -> anyhow::
                 "snapshot manifest version {LEGACY_MANIFEST_VERSION} cannot contain microVM sandbox blocks"
             );
         }
-        PREVIOUS_MANIFEST_VERSION | VERSION_4_MANIFEST_VERSION | MANIFEST_VERSION => {
+        PREVIOUS_MANIFEST_VERSION | VERSION_4_MANIFEST_VERSION | VERSION_5_MANIFEST_VERSION => {
             anyhow::ensure!(
                 manifest.state_sha256.is_empty() && manifest.memory_sha256.is_empty(),
                 "snapshot manifest version {} must not contain legacy artifact digests",
@@ -174,9 +177,18 @@ pub(super) fn validate_manifest_version(manifest: &SnapshotManifest) -> anyhow::
                     "snapshot manifest version {PREVIOUS_MANIFEST_VERSION} cannot contain microVM sandbox blocks"
                 );
             }
-            if manifest.version == MANIFEST_VERSION {
+            if manifest.version == VERSION_5_MANIFEST_VERSION {
                 microvm::validate_snapshot_tier(manifest)?;
             }
+        }
+        MANIFEST_VERSION => {
+            // Empty only while capture is being assembled. OpenedSnapshot
+            // requires both digests before admitting an artifact for restore.
+            if !manifest.state_sha256.is_empty() || !manifest.memory_sha256.is_empty() {
+                validate_sha256(&manifest.state_sha256, "state.bin")?;
+                validate_sha256(&manifest.memory_sha256, "memory.bin")?;
+            }
+            microvm::validate_snapshot_tier(manifest)?;
         }
         version => anyhow::bail!(
             "snapshot manifest version {version} is not supported (expected {LEGACY_MANIFEST_VERSION} through {MANIFEST_VERSION})"
@@ -209,11 +221,11 @@ mod tests {
     }
 
     #[test]
-    fn current_manifest_rejects_legacy_payload_digests() {
+    fn current_manifest_requires_paired_payload_digests() {
         let mut manifest = test_manifest();
         manifest.state_sha256 = vec![0; SHA256_SIZE];
         let error = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();
-        assert!(error.to_string().contains("legacy artifact digests"));
+        assert!(error.to_string().contains("memory.bin"));
     }
 
     #[test]

@@ -313,7 +313,11 @@ pub fn microvm_root_identity(root_path: impl AsRef<Path>) -> anyhow::Result<Vec<
         use std::os::unix::fs::MetadataExt;
 
         let mut identity = b"openvmm-microvm-fs-unix-v1\0".to_vec();
-        identity.extend_from_slice(&metadata.dev().to_le_bytes());
+        #[cfg(target_os = "macos")]
+        let device = lxutil::LxVolume::new(&canonical)?.lstat("")?.device_nr;
+        #[cfg(not(target_os = "macos"))]
+        let device = metadata.dev();
+        identity.extend_from_slice(&device.to_le_bytes());
         identity.extend_from_slice(&metadata.ino().to_le_bytes());
         Ok(identity)
     }

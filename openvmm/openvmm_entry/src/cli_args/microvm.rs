@@ -55,6 +55,9 @@ impl FromStr for MicrovmWorkloadIdentityCli {
     type Err = anyhow::Error;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == "unsafe-root" {
+            return Ok(Self { uid: 0, gid: 0 });
+        }
         let (uid, gid) = value
             .split_once(':')
             .filter(|(_, gid)| !gid.contains(':'))
@@ -258,6 +261,7 @@ pub struct MicrovmCli {
     pub microvm_sandbox_block: Vec<MicrovmSandboxBlockCli>,
 
     /// Run guest workloads under this fixed non-root numeric identity.
+    /// `unsafe-root` deliberately selects root for isolation negative controls.
     ///
     /// The identity is part of the initial-boot command line and cannot be
     /// replaced when restoring a snapshot.
@@ -388,6 +392,10 @@ pub struct MicrovmCli {
     )]
     pub microvm_control_auth_stdin: bool,
 
+    /// retain the prepared pipe for host REPL commands after its framed capability
+    #[clap(long, hide = true, requires = "microvm_control_auth_stdin")]
+    pub microvm_control_repl: bool,
+
     /// maximum time for a control-console client to authenticate
     #[clap(
         long = "microvm-control-auth-timeout-ms",
@@ -504,20 +512,46 @@ impl Options {
                     && self.microvm.allow_host.is_empty()
                     && self.microvm.block_host.is_empty()
                     && self.microvm.allow_endpoint.is_empty()
-                    && self.microvm.microvm_mount.is_none()
-                    && self.microvm.microvm_mount_deny.is_empty()
-                    && self.microvm.microvm_mount_owner.is_none()
                     && self.microvm.microvm_sandbox_block.is_empty()
                     && self.microvm.microvm_workload_identity.is_none()
                     && self.microvm.microvm_lifecycle.is_none()
-                    && self.microvm.microvm_report.is_none()
                     && self.microvm.restore_processors.is_none()
                     && self.microvm.restore_memory.is_none()
-                    && self.microvm.memory_capacity.is_none()
-                    && self.microvm.microvm_control_console.is_none()
-                    && !self.microvm.microvm_control_auth_stdin,
+                    && self.microvm.memory_capacity.is_none(),
                 "--network-profile, --net-tap, --mount, --microvm-sandbox-block, --microvm-workload-identity, --microvm-lifecycle, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --memory-capacity, and microVM network policy require a microVM machine"
             );
+            anyhow::ensure!(
+                self.microvm.microvm_mount.is_some() || self.microvm.microvm_mount_deny.is_empty(),
+                "--mount-deny requires --mount"
+            );
+            anyhow::ensure!(
+                self.microvm.microvm_mount.is_some() || self.microvm.microvm_mount_owner.is_none(),
+                "--mount-owner requires --mount"
+            );
+            if let Some(control) = &self.microvm.microvm_control_console {
+                anyhow::ensure!(
+                    matches!(control, SerialConfigCli::Pipe(_) | SerialConfigCli::None),
+                    "control console must be a listener or disconnected"
+                );
+                anyhow::ensure!(
+                    self.virtio_console.is_some(),
+                    "control console requires --virtio-console"
+                );
+                anyhow::ensure!(
+                    self.microvm.microvm_control_auth_stdin
+                        == !matches!(control, SerialConfigCli::None),
+                    "live control console requires --microvm-control-auth-stdin"
+                );
+                anyhow::ensure!(
+                    (1..=60_000).contains(&self.microvm.microvm_control_auth_timeout_ms),
+                    "control authentication timeout must be between 1 and 60000 ms"
+                );
+            } else {
+                anyhow::ensure!(
+                    !self.microvm.microvm_control_auth_stdin,
+                    "--microvm-control-auth-stdin requires a control console"
+                );
+            }
             return Ok(());
         }
 
@@ -666,6 +700,7 @@ impl Options {
                         | SerialConfigCli::ConnectPipe(_)
                         | SerialConfigCli::ConnectTcp(_)
                         | SerialConfigCli::Console
+                        | SerialConfigCli::Stderr
                         | SerialConfigCli::None
                 ),
                 "microVM virtio-console requires listen=..., connect=..., console, or none"
@@ -1037,6 +1072,33 @@ mod tests {
     use test_with_tracing::test;
 
     #[test]
+    #[cfg(not(guest_arch = "x86_64"))]
+    fn test_microvm_rejects_non_x86_guest() {
+        let options = Options::try_parse_from(["openvmm", "--machine", "microvm"]).unwrap();
+        assert!(
+            options
+                .validate_microvm_options()
+                .unwrap_err()
+                .to_string()
+                .contains("x86-64 guest")
+        );
+    }
+
+    #[test]
+    fn test_standard_mount_owner_requires_an_export() {
+        assert!(Options::try_parse_from(["openvmm", "--mount-owner", "caller"]).is_err());
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--mount",
+            "/mnt/share,host,rw",
+            "--mount-owner",
+            "caller",
+        ])
+        .unwrap();
+        options.validate_microvm_options().unwrap();
+    }
+
+    #[test]
     fn test_machine_profile_option_parsed() {
         let opt = Options::try_parse_from(["openvmm"]).unwrap();
         assert_eq!(opt.machine, MachineProfileCli::Standard);
@@ -1053,6 +1115,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(guest_arch = "x86_64")]
     fn test_microvm_processor_validation() {
         for processors in [1, 2, 4, 8] {
             let options = Options::try_parse_from([
@@ -1116,6 +1179,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(guest_arch = "x86_64")]
     fn test_microvm_memory_capacity_and_restore_target_parsing() {
         let capture = Options::try_parse_from([
             "openvmm",
@@ -1175,6 +1239,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(guest_arch = "x86_64")]
     fn test_microvm_sandbox_block_parser_and_validation() {
         let valid = Options::try_parse_from([
             "openvmm",
@@ -1228,6 +1293,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(guest_arch = "x86_64")]
     fn test_microvm_snapshot_tier_is_explicit() {
         for tier in ["platform", "workload-start", "instance-checkpoint"] {
             let options = Options::try_parse_from([
@@ -1453,6 +1519,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(guest_arch = "x86_64")]
     fn test_microvm_preflight_rejects_unsupported_combinations() {
         let valid = Options::try_parse_from(["openvmm", "--machine", "microvm"]).unwrap();
         valid.validate_microvm_options().unwrap();
@@ -1721,6 +1788,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(guest_arch = "x86_64")]
     fn test_microvm_host_loopback_generic_allow_is_rejected() {
         let common = [
             "openvmm",
@@ -1760,6 +1828,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(guest_arch = "x86_64")]
     fn test_microvm_egress_policy_is_typed_and_canonical() {
         let options = Options::try_parse_from([
             "openvmm",
@@ -1844,6 +1913,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(guest_arch = "x86_64")]
     fn test_microvm_workload_identity_is_non_root_and_not_restorable() {
         for identity in ["0:1", "1:0", "root:1", "1:root", "1", "1:2:3"] {
             assert!(
@@ -2084,6 +2154,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(guest_arch = "x86_64")]
     fn test_microvm_directional_network_policy_is_independent_and_fail_closed() {
         let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
         for (arguments, expected_mode) in [
@@ -2203,6 +2274,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(guest_arch = "x86_64")]
     fn test_microvm_mount_owner_is_explicit_and_requires_a_mount() {
         let default = Options::try_parse_from([
             "openvmm",
@@ -2281,6 +2353,6 @@ mod tests {
             "caller",
         ])
         .unwrap();
-        assert!(standard.validate_microvm_options().is_err());
+        standard.validate_microvm_options().unwrap();
     }
 }
