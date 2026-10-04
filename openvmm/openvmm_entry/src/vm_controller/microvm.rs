@@ -381,23 +381,18 @@ impl VmController {
                 })
                 .transpose()?;
             let publication = openvmm_defs::profile::ProfileSpan::start();
-            let write_result = if self.microvm.snapshot_memory_file.is_some() {
-                openvmm_helpers::snapshot::publish::write_snapshot_from_owned_memory_and_scratch_files(
-                    &destination,
-                    &manifest,
-                    &saved_state_bytes,
-                    memory_file,
-                    scratch_file,
-                )
-            } else {
+            // Quiescing establishes the saved-state boundary, but the worker
+            // still owns writable RAM mappings until teardown finishes. Native
+            // KVM can modify that backing during teardown, so publishing a hard
+            // link would let those writes corrupt an already committed snapshot.
+            let write_result =
                 openvmm_helpers::snapshot::publish::write_snapshot_from_memory_and_scratch_files(
                     &destination,
                     &manifest,
                     &saved_state_bytes,
                     memory_file,
                     scratch_file,
-                )
-            };
+                );
             if write_result.is_ok() {
                 publication.complete_milestone(
                     "capture",

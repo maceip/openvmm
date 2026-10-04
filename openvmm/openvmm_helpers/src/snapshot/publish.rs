@@ -571,6 +571,43 @@ mod tests {
     use std::io::Write;
 
     #[test]
+    fn published_memory_survives_source_teardown_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("source.bin");
+        let snapshot_path = dir.path().join("snapshot");
+        let expected = vec![0x5a_u8; 1024];
+        std::fs::write(&source_path, &expected).unwrap();
+        let mut source = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&source_path)
+            .unwrap();
+
+        write_snapshot_from_memory_and_scratch_files(
+            &snapshot_path,
+            &test_manifest(),
+            b"state",
+            &source,
+            None,
+        )
+        .unwrap();
+        super::super::restore::OpenedSnapshot::open(&snapshot_path).unwrap();
+
+        // A stopped VM still retains this writable backing until its worker
+        // terminates. Those later writes must not affect committed artifacts.
+        source.write_all(&vec![0xa5_u8; 1024]).unwrap();
+        source.sync_all().unwrap();
+        drop(source);
+        std::fs::remove_file(source_path).unwrap();
+
+        super::super::restore::OpenedSnapshot::open(&snapshot_path).unwrap();
+        assert_eq!(
+            std::fs::read(snapshot_path.join(MEMORY_FILE_NAME)).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
     fn private_restore_memory_copy_roundtrips_source_bytes() {
         use super::super::fs::copy_memory_to_private_file;
 

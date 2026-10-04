@@ -35,11 +35,11 @@ workload-start snapshots are reusable clones; instance checkpoints are
 single-use resumes.
 
 ```admonish warning
-Automatically allocated microVM RAM and the snapshot destination are on the
-same filesystem so OpenVMM can promote the exact RAM file by hard link. A
-filesystem without hard-link support falls back to copying. Explicit
-user-supplied memory is always copied into a uniquely named sibling staging
-directory. OpenVMM atomically renames the completed directory into place.
+MicroVM capture copies the exact open RAM backing into a uniquely named sibling
+staging directory, including automatically allocated RAM. The source worker
+retains writable mappings until teardown completes; an independent copy prevents
+teardown writes from changing committed snapshot bytes. OpenVMM atomically
+renames the completed directory into place.
 ```
 
 ## Saving a snapshot
@@ -62,9 +62,8 @@ save-snapshot path/to/snapshot-dir
 ```
 
 OpenVMM writes and flushes `manifest.bin`, `state.bin`, and `memory.bin` in a
-sibling staging directory. Host-driven saves and user-supplied microVM backing
-use an independent memory copy. Automatic microVM backing uses its exact RAM
-file when the filesystem supports hard links. The destination must not already
+sibling staging directory. Host-driven saves and guest-requested microVM capture
+use an independent memory copy. The destination must not already
 exist. Publishing the completed directory is the commit point.
 
 On Windows, large mapped-RAM flushes use up to eight concurrent, disjoint,
@@ -91,9 +90,8 @@ external storage-throttling condition has been eliminated.
 ```admonish warning
 After a host-driven save, the VM remains **paused**. Guest-requested microVM
 capture instead terminates the source process after publication commits.
-If automatic-RAM publication fails after creating its staging link, OpenVMM
-removes the complete staging directory before resuming; if cleanup cannot be
-proved, it terminates the source instead.
+If publication fails before committing the completed staging directory, the
+source may resume. A failure after commit terminates the source instead.
 ```
 
 While a guest-requested snapshot boundary is held, VM-worker management RPCs
