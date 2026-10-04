@@ -76,7 +76,7 @@ impl Vcpu {
             cr3: self.reg(39)?,
             cr4: self.reg(40)?,
             cr8: self.reg(49)? >> 4,
-            efer: self.msr(0xc0000080)?,
+            efer: self.efer()?,
         })
     }
 
@@ -123,12 +123,7 @@ impl Vcpu {
         self.set_reg(39, value.cr3)?;
         self.set_reg(40, value.cr4)?;
         self.set_reg(49, value.cr8 << 4)?;
-        self.set_msr(0xc0000080, value.efer)?;
-        let entry = self.vmcs(0x4012)?;
-        self.vmcs_set(
-            0x4012,
-            (entry & !(1 << 9)) | (((value.efer >> 10) & 1) << 9),
-        )
+        self.set_efer(value.efer)
     }
 }
 
@@ -325,11 +320,14 @@ impl vp::AccessVpState for VpState<'_, '_> {
     }
     fn pat(&mut self) -> Result<vp::Pat, Error> {
         Ok(vp::Pat {
-            value: self.0.vcpu.vmcs(0x2804)?,
+            value: self.0.guest_pat.get(),
         })
     }
     fn set_pat(&mut self, value: &vp::Pat) -> Result<(), Error> {
-        self.0.vcpu.vmcs_set(0x2804, value.value)
+        if !self.0.guest_pat.set(value.value) {
+            return Err(anyhow::anyhow!("Intel HVF PAT contains a reserved memory type").into());
+        }
+        Ok(())
     }
     fn virtual_msrs(&mut self) -> Result<vp::VirtualMsrs, Error> {
         Ok(vp::VirtualMsrs {

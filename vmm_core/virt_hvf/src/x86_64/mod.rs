@@ -453,6 +453,7 @@ impl BindProcessor for HvfProcessorBinder {
             nmi_pending: false,
             extint_pending: false,
             msrs: Default::default(),
+            guest_pat: Default::default(),
             _binder: PhantomData,
         })
     }
@@ -471,6 +472,7 @@ pub struct HvfProcessor<'a> {
     nmi_pending: bool,
     extint_pending: bool,
     msrs: std::collections::BTreeMap<u32, u64>,
+    guest_pat: crate::intel::GuestPat,
     _binder: PhantomData<&'a mut HvfProcessorBinder>,
 }
 
@@ -523,14 +525,12 @@ impl Vcpu {
             (1 << 3) | (1 << 7) | (1 << 19) | (1 << 20) | (1 << 24) | (1 << 31),
         )?;
         cpu.control(0x401e, (1 << 1) | (1 << 7))?; // EPT + unrestricted guest
-        cpu.control(0x4012, (1 << 14) | (1 << 15))?; // PAT + EFER
+        cpu.control(0x400c, 0)?; // retain the framework's required VM-exit controls
+        cpu.control(0x4012, crate::intel::INITIAL_ENTRY_CONTROLS)?;
         cpu.vmcs_set(0x4004, 0)?;
         cpu.vmcs_set(0x6000, 0)?;
         cpu.vmcs_set(0x6002, 0)?;
-        for msr in [
-            0xc0000080, 0xc0000081, 0xc0000082, 0xc0000083, 0xc0000084, 0xc0000100, 0xc0000101,
-            0xc0000102, 0x174, 0x175, 0x176,
-        ] {
+        for &msr in crate::intel::NATIVE_MSRS {
             // SAFETY: architectural native MSRs, retained and switched by HVF.
             check(
                 unsafe { abi::hv_vcpu_enable_native_msr(id, msr, true) },
@@ -603,6 +603,19 @@ impl Vcpu {
         check(
             unsafe { abi::hv_vcpu_write_msr(self.id, msr, value) },
             "write MSR",
+        )
+    }
+    fn efer(&self) -> Result<u64, Error> {
+        self.vmcs(0x2806)
+    }
+    fn set_efer(&self, value: u64) -> Result<(), Error> {
+        if value & !crate::intel::EFER_MASK != 0 {
+            return Err(anyhow::anyhow!("Intel HVF EFER contains reserved bits").into());
+        }
+        self.vmcs_set(0x2806, value)?;
+        self.vmcs_set(
+            0x4012,
+            crate::intel::entry_controls_for_efer(self.vmcs(0x4012)?, value),
         )
     }
     fn advance(&self) -> Result<(), Error> {
@@ -706,8 +719,18 @@ impl HvfProcessor<'_> {
             let valid = if apic_msr {
                 self.apic.access(&mut client).msr_write(msr, value).is_ok()
             } else if msr == 0x277 {
-                self.vcpu.vmcs_set(0x2804, value)?;
-                true
+                self.guest_pat.set(value)
+            } else if msr == 0xc0000080 {
+                if let Some(value) = crate::intel::guest_efer_write(
+                    self.vcpu.efer()?,
+                    value,
+                    self.vcpu.reg(36)? & (1 << 31) != 0,
+                ) {
+                    self.vcpu.set_efer(value)?;
+                    true
+                } else {
+                    false
+                }
             } else if msr == 0x10 {
                 self.access_state(Vtl::Vtl0).set_tsc(&vp::Tsc { value })?;
                 true
@@ -729,7 +752,8 @@ impl HvfProcessor<'_> {
             } else {
                 match msr {
                     0x10 => Some(self.vcpu.msr(0x10)?),
-                    0x277 => Some(self.vcpu.vmcs(0x2804)?),
+                    0x277 => Some(self.guest_pat.get()),
+                    0xc0000080 => Some(self.vcpu.efer()?),
                     0xfe => Some(0x508),
                     0x1a0 => Some(*self.msrs.get(&msr).unwrap_or(&((1 << 11) | (1 << 12) | 1))),
                     0x200..=0x20f

@@ -8,6 +8,9 @@
 // UNSAFETY: Calling Hypervisor.framework and mapping guest memory.
 #![expect(unsafe_code)]
 
+#[cfg(any(guest_arch = "x86_64", test))]
+mod intel;
+
 #[cfg(guest_arch = "aarch64")]
 include!("aarch64.rs");
 

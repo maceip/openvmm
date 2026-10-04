@@ -9709,6 +9709,7 @@ dependencies = [
  "open_enum",
  "parking_lot",
  "safe_intrinsics",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",

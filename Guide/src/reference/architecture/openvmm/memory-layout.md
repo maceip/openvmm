@@ -309,6 +309,20 @@ Trailing reserved ranges are omitted from the returned allocation list,
 but a reserved range that sits between real allocations is reported so
 callers can see the full occupied map.
 
+## Intel macOS guest memory-type state
+
+The Intel Hypervisor.framework backend keeps the guest page attribute table
+(PAT) in software because the framework exposes neither the PAT MSR nor the
+guest PAT VMCS field. Guest reads, writes, and saved-state access use the same
+per-vCPU value. Reserved PAT memory types cause a guest general-protection
+fault or a saved-state validation error without changing the previous value.
+
+EFER uses the guest VMCS field rather than native MSR access. Restoring EFER
+also selects the corresponding VM-entry guest mode. Guest writes preserve
+the read-only long-mode-active bit and cannot change long-mode enable while
+paging is enabled. VM-entry controls request EFER loading and retain the
+framework's required controls without requesting unsupported PAT loading.
+
 ## When to update this page
 
 Update this page when any of these change:
