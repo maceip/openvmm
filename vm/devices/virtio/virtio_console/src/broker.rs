@@ -160,12 +160,17 @@ impl Inspect for BrokerWorker {
 }
 
 impl BrokerWorker {
+    /// A fresh listener may receive a connection before VM construction finishes.
+    /// No protocol input has been accepted from this host yet.
+    pub(crate) fn has_unstarted_host_attachment(&self) -> bool {
+        self.broker.state() == control_session_broker::BrokerState::AwaitGuestAttach
+            && !self.broker.host_is_connected()
+            && self.transport_state == HostTransportState::Connected
+    }
+
     /// Applies a guest-initiated device reset to the broker and host transport.
     pub(crate) fn reset_for_device(&mut self) {
-        let preserve_unstarted_host = self.broker.state()
-            == control_session_broker::BrokerState::AwaitGuestAttach
-            && !self.broker.host_is_connected()
-            && self.transport_state == HostTransportState::Connected;
+        let preserve_unstarted_host = self.has_unstarted_host_attachment();
         self.broker.reset_for_device();
         self.host_input.clear();
         self.auth_deadline = None;

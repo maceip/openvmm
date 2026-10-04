@@ -151,7 +151,11 @@ impl VirtioConsoleDevice {
                     mode.config.capability,
                 )
                 .map_err(|error| invalid_saved_state(error.to_string()))?;
-                if mode.host_io.is_connected() {
+                // Windows named-pipe clients can connect to the fresh listener
+                // while RAM is being copied. Keep that unprocessed attachment;
+                // the restored broker will authenticate it using fresh credentials.
+                let preserve_unstarted_host = mode.has_unstarted_host_attachment();
+                if mode.host_io.is_connected() && !preserve_unstarted_host {
                     mode.host_io.disconnect_current().map_err(|error| {
                         RestoreError::Other(
                             anyhow::Error::new(error)
@@ -159,7 +163,7 @@ impl VirtioConsoleDevice {
                         )
                     })?;
                 }
-                Some(broker)
+                Some((broker, preserve_unstarted_host))
             }
         };
 
@@ -169,11 +173,16 @@ impl VirtioConsoleDevice {
         };
         runtime.partial_transmit = partial_transmit;
         runtime.staged_rx = saved.staged_rx.into();
-        if let (ConsoleWorkerMode::Broker(mode), Some(broker)) = (&mut worker.mode, restored_broker)
+        if let (ConsoleWorkerMode::Broker(mode), Some((broker, preserve_unstarted_host))) =
+            (&mut worker.mode, restored_broker)
         {
             mode.broker = broker;
             mode.host_input.clear();
-            mode.transport_state = HostTransportState::WaitingForConnect;
+            mode.transport_state = if preserve_unstarted_host {
+                HostTransportState::Connected
+            } else {
+                HostTransportState::WaitingForConnect
+            };
             mode.auth_deadline = None;
         }
         Ok(())

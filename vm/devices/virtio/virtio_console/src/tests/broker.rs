@@ -618,6 +618,46 @@ async fn broker_fragmentation_partial_host_writes_and_backpressure(driver: Defau
 }
 
 #[async_test]
+async fn broker_restore_preserves_fresh_pending_host(driver: DefaultDriver) {
+    let mut harness = TestHarness::new_broker(&driver, BROKER_INSTANCE, BROKER_CAPABILITY);
+    let saved = harness.device.save_device().unwrap().unwrap();
+
+    const NEW_INSTANCE: [u8; 16] = [0x63; 16];
+    const NEW_CAPABILITY: [u8; 32] = [0xb9; 32];
+    harness.replace_with_broker(NEW_INSTANCE, NEW_CAPABILITY);
+    // Named-pipe clients can connect while restore is still constructing the
+    // VM. This input belongs to the fresh listener, not the captured broker.
+    harness.handle.inject_rx_data(&encode(&Record::bootstrap(
+        RecordType::HostAttach,
+        NEW_CAPABILITY.to_vec(),
+    )));
+    harness.device.restore_device(Some(saved)).unwrap();
+    assert!(harness.handle.is_connected());
+    harness.enable().await;
+
+    let reset = decode(&harness.receive_guest_bytes(0, 128).await);
+    assert_eq!(
+        (reset.record_type, reset.instance_id, reset.epoch),
+        (RecordType::Reset, NEW_INSTANCE, 1)
+    );
+    yield_until(|| harness.handle.tx_data().len() >= control_session_protocol::HEADER_LEN).await;
+    let wait = decode(&harness.handle.take_tx_data());
+    assert_eq!(
+        (wait.record_type, wait.instance_id, wait.epoch),
+        (RecordType::Wait, NEW_INSTANCE, 1)
+    );
+    harness
+        .send_guest_bytes(0, &encode(&ack(NEW_INSTANCE, 1)))
+        .await;
+    yield_until(|| harness.handle.tx_data().len() >= control_session_protocol::HEADER_LEN).await;
+    let ready = decode(&harness.handle.take_tx_data());
+    assert_eq!(
+        (ready.record_type, ready.instance_id, ready.epoch),
+        (RecordType::Ready, NEW_INSTANCE, 1)
+    );
+}
+
+#[async_test]
 async fn broker_restore_finishes_old_output_then_uses_fresh_identity(driver: DefaultDriver) {
     let mut harness = TestHarness::new_broker(&driver, BROKER_INSTANCE, BROKER_CAPABILITY);
     harness.enable().await;
@@ -651,7 +691,7 @@ async fn broker_restore_finishes_old_output_then_uses_fresh_identity(driver: Def
     const NEW_CAPABILITY: [u8; 32] = [0xb8; 32];
     harness.replace_with_broker(NEW_INSTANCE, NEW_CAPABILITY);
     harness.device.restore_device(Some(saved)).unwrap();
-    assert!(!harness.handle.is_connected());
+    assert!(harness.handle.is_connected());
     {
         let (worker, _) = harness.device.worker.get();
         let crate::direct::ConsoleWorkerMode::Broker(mode) = &worker.mode else {

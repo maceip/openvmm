@@ -260,6 +260,12 @@ guest transmit offset live in the device-private virtio payload, preserving
 their order across a new-process restore. Host input is gated before the vCPU
 snapshot boundary and resumed only if capture rolls back.
 
+A control-console client may connect to the fresh listener while restore is
+still copying RAM. If the new broker has not accepted any input from that
+client, restore preserves the pending connection and authenticates it with the
+new instance's capability after startup. Previously accepted attachments are
+disconnected, and a captured capability cannot authenticate to the new broker.
+
 If establishing the snapshot boundary returns an error after vCPU stopping
 begins, OpenVMM keeps host input gated and stops and tears down the VM instead
 of attempting a live rollback. This applies to both capture and the
