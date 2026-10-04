@@ -100,6 +100,16 @@ mod aarch64 {
     use virt::aarch64::vm::AccessVmState;
 
     impl AccessVmState for PartitionStateAccess<'_> {
+        fn native(&mut self) -> Result<virt::aarch64::vm::NativeState, Self::Error> {
+            Err(Error::UnsupportedParameter("ARM native migration state"))
+        }
+        fn set_native(
+            &mut self,
+            _value: &virt::aarch64::vm::NativeState,
+        ) -> Result<(), Self::Error> {
+            Err(Error::UnsupportedParameter("ARM native migration state"))
+        }
+
         type Error = Error;
 
         fn caps(&self) -> &virt::PartitionCapabilities {

@@ -90,3 +90,16 @@ synthetic devices are unavailable. Snapshots bind the host TSC frequency and
 CPU contract, and retain pending interrupts, architectural registers and FPU
 state. The executable needs the macOS hypervisor entitlement on both Intel
 and Apple Silicon.
+
+## Linux Arm64 snapshots
+
+The native Arm64 KVM backend saves processor registers (including SIMD and
+system registers), MP state, and the complete GICv3 distributor and per-CPU
+redistributor state. Systems with an interrupt translation service also save
+its registers and tables. This state is stored in a versioned backend-specific
+snapshot record; restoring a different backend, unsupported version, register
+layout, or interrupt topology is rejected before applying hardware state.
+
+Snapshots remain bound to the source host CPU contract and device configuration.
+Guest wall-clock, entropy, network, and writable block repair are separate
+runtime responsibilities and must be completed before resuming a cloned workload.

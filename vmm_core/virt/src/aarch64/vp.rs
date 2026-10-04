@@ -566,6 +566,7 @@ mod tests {
             vendor: Vendor::ARM,
             gic_max_spis: 256,
             virtual_timer_save: true,
+            native_state_save: false,
             extended_system_registers_save: true,
         }
     }
@@ -647,6 +648,7 @@ mod tests {
         let no_gic = Aarch64PartitionCapabilities {
             gic_max_spis: 0,
             virtual_timer_save: false,
+            native_state_save: false,
             extended_system_registers_save: false,
             ..caps()
         };

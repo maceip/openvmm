@@ -197,6 +197,7 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
                 gic_max_spis: 256,
                 // CNTV_CTL_EL0/CNTV_CVAL_EL0 are captured per VP.
                 virtual_timer_save: true,
+                native_state_save: false,
                 // SPSR_EL1 and the TPIDR thread registers are captured per VP.
                 extended_system_registers_save: true,
             },
@@ -502,6 +503,13 @@ pub struct HvfPartitionStateAccess<'a> {
 }
 
 impl AccessVmState for HvfPartitionStateAccess<'_> {
+    fn native(&mut self) -> Result<virt::aarch64::vm::NativeState, Self::Error> {
+        Err(anyhow::anyhow!("native migration state is unsupported on HVF").into())
+    }
+    fn set_native(&mut self, _value: &virt::aarch64::vm::NativeState) -> Result<(), Self::Error> {
+        Err(anyhow::anyhow!("native migration state is unsupported on HVF").into())
+    }
+
     type Error = Error;
 
     fn caps(&self) -> &Aarch64PartitionCapabilities {
