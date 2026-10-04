@@ -408,7 +408,33 @@ impl VmController {
                     },
                 );
             }
-            write_result.map_err(anyhow::Error::new)
+            write_result.map_err(anyhow::Error::new)?;
+            if openvmm_defs::profile::enabled() {
+                let integrity = openvmm_defs::profile::ProfileSpan::start();
+                match openvmm_helpers::snapshot::restore::OpenedSnapshot::open(&destination) {
+                    Ok(_) => {
+                        integrity.complete("capture", "publication_integrity", Default::default());
+                        tracing::info!(
+                            path = %destination.display(),
+                            "snapshot payload integrity verified before source teardown"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            error = error.as_ref() as &dyn std::error::Error,
+                            "snapshot payload integrity failed before source teardown"
+                        );
+                        return Err(
+                            openvmm_helpers::snapshot::publish::SnapshotWriteError::Committed {
+                                path: destination.clone(),
+                                error,
+                            }
+                            .into(),
+                        );
+                    }
+                }
+            }
+            Ok(())
         })();
 
         match result {
