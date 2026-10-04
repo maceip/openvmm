@@ -176,6 +176,11 @@ without adding host read/write latency. KVM snapshot resume requires
 fails restore explicitly instead of falling back to imprecise counter writes.
 All backends read back the adjusted TSC before resume and reject a discarded
 or incomplete downtime adjustment.
+MicroVM restore refreshes the host downtime after its private RAM copy and
+generation checks finish. Slow dense copies therefore contribute to the guest
+clock adjustment; the earlier admission-time sample is not used to resume the
+guest with a stale clock. Destination rollback and the 30-day downtime bound
+remain enforced when the sample is refreshed.
 After restoring counters and advancing snapshot time, MSHV and WHP freeze
 partition time and align every VP's TSC to the BSP's advanced counter before
 any VP runs. The first VP run thaws time. Setting counters while time is

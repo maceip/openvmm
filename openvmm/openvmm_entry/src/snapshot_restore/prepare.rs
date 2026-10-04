@@ -61,7 +61,7 @@ pub(crate) fn prepare_snapshot_restore_for_config(
         expected_vp_count,
         crate::system_page_size(),
     )?;
-    let restore_time = expected_microvm_contract
+    let mut restore_time = expected_microvm_contract
         .map(|contract| {
             microvm::validate_restore_contract(
                 manifest,
@@ -69,6 +69,18 @@ pub(crate) fn prepare_snapshot_restore_for_config(
                 expected_vp_count,
                 contract,
             )
+        })
+        .transpose()?;
+    let capture_time = restore_time
+        .as_ref()
+        .map(|_| {
+            manifest
+                .machine_contract
+                .as_ref()
+                .context("microVM snapshot is missing its authoritative machine contract")?
+                .capture_wall_clock
+                .try_into()
+                .context("snapshot capture wall clock is invalid")
         })
         .transpose()?;
 
@@ -135,6 +147,12 @@ pub(crate) fn prepare_snapshot_restore_for_config(
         },
     );
     snapshot.validate_memory_generation(expected_memory_size)?;
+    // Admission calculates downtime before private RAM is materialized. Dense
+    // copies can take seconds; include that work in the clock adjustment handed
+    // to the worker instead of resuming the guest with the earlier sample.
+    if let (Some(restore_time), Some(capture_time)) = (&mut restore_time, capture_time) {
+        microvm::refresh_restore_time(restore_time, capture_time, std::time::SystemTime::now())?;
+    }
     let (_, _, guards) = snapshot.into_parts();
 
     Ok(PreparedSnapshotRestore {

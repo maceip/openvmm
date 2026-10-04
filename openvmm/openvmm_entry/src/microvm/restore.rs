@@ -340,6 +340,16 @@ pub(crate) type ExpectedRestoreContract<'a> = (
 /// microVM: host downtime, TSC and APIC frequencies, and the CPU contract.
 pub(crate) type RestoreTime = (Duration, u64, Option<u64>, Vec<u8>);
 
+/// Refresh the downtime after the destination's private RAM copy is ready.
+pub(crate) fn refresh_restore_time(
+    restore_time: &mut RestoreTime,
+    capture_time: std::time::SystemTime,
+    destination_time: std::time::SystemTime,
+) -> anyhow::Result<()> {
+    restore_time.0 = calculate_snapshot_downtime(capture_time, destination_time)?;
+    Ok(())
+}
+
 /// Validates the authoritative machine contract of a microVM snapshot against
 /// the restore-time configuration.
 pub(crate) fn validate_restore_contract(
@@ -443,6 +453,19 @@ mod tests {
         )
         .unwrap_err();
         assert!(excessive.to_string().contains("exceeds the supported"));
+    }
+
+    #[test]
+    fn snapshot_restore_clock_includes_private_ram_materialization() {
+        let capture = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        let mut restore = (Duration::from_secs(11), 1000, Some(200), vec![1, 2]);
+        // A destination with a slow dense RAM copy must include the additional
+        // four seconds, while preserving the captured CPU/clock contract.
+        refresh_restore_time(&mut restore, capture, capture + Duration::from_secs(15)).unwrap();
+        assert_eq!(
+            restore,
+            (Duration::from_secs(15), 1000, Some(200), vec![1, 2])
+        );
     }
 
     #[test]
