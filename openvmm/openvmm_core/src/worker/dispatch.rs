@@ -3164,7 +3164,9 @@ impl InitializedVm {
         )
         .context("failed to create partition unit")?;
 
-        // Start the VP backing threads.
+        // Start the VP backing threads. Record the actual bindings so a
+        // profiled restore can verify its instantiated processor inventory.
+        let vp_thread_bind = openvmm_defs::profile::ProfileSpan::start();
         try_join_all(vps.into_iter().zip(vp_runners).enumerate().map(
             |(vp_index, (mut vp, runner))| {
                 let partition = partition.clone();
@@ -3172,17 +3174,28 @@ impl InitializedVm {
                 let (send, recv) = mesh::oneshot();
                 thread::Builder::new()
                     .name(format!("vp-{}", vp_index))
-                    .spawn(move || match vp.bind() {
-                        Ok(mut vp) => {
-                            send.send(Ok(()));
-                            block_on_vp(
-                                partition,
-                                VpIndex::new(vp_index as u32),
-                                vp.run(runner, &chipset),
-                            )
-                        }
-                        Err(err) => {
-                            send.send(Err(err));
+                    .spawn(move || {
+                        let vp_bind = openvmm_defs::profile::ProfileSpan::start();
+                        match vp.bind() {
+                            Ok(mut vp) => {
+                                if openvmm_defs::profile::enabled() {
+                                    let phase = if vp_index == 0 {
+                                        "vp_bind_bsp".to_owned()
+                                    } else {
+                                        format!("vp_bind_ap_{vp_index}")
+                                    };
+                                    vp_bind.complete("startup", &phase, Default::default());
+                                }
+                                send.send(Ok(()));
+                                block_on_vp(
+                                    partition,
+                                    VpIndex::new(vp_index as u32),
+                                    vp.run(runner, &chipset),
+                                )
+                            }
+                            Err(err) => {
+                                send.send(Err(err));
+                            }
                         }
                     })
                     .unwrap();
@@ -3195,6 +3208,7 @@ impl InitializedVm {
             },
         ))
         .await?;
+        vp_thread_bind.complete_milestone("startup", "vp_thread_bind", Default::default());
 
         let mut this = LoadedVm {
             state_units,
