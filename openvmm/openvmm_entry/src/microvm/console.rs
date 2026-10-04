@@ -860,16 +860,15 @@ mod tests {
         assert_ne!(rebound.identity, saved.identity);
         validate_microvm_console_attachment_namespace(&rebound, Path::new("snapshot")).unwrap();
         let outside = SerialConfigCli::Pipe("//./pipe/unrelated".into());
-        let (_, _, rebound) = microvm_console_attachment_from_snapshot_with_identity(
-            &saved,
-            Some(&outside),
-            MICROVM_CONTROL_CONSOLE_STABLE_ID,
-            MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND,
-            true,
-        )
-        .unwrap();
         assert!(
-            validate_microvm_console_attachment_namespace(&rebound, Path::new("snapshot")).is_err()
+            microvm_console_attachment_from_snapshot_with_identity(
+                &saved,
+                Some(&outside),
+                MICROVM_CONTROL_CONSOLE_STABLE_ID,
+                MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND,
+                true,
+            )
+            .is_err()
         );
     }
 
