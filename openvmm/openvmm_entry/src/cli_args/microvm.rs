@@ -671,8 +671,9 @@ impl Options {
             let name = hypervisor.split(':').next().unwrap_or(hypervisor);
             anyhow::ensure!(
                 (cfg!(target_os = "linux") && matches!(name, "kvm" | "mshv"))
-                    || (cfg!(windows) && name == "whp"),
-                "microVM requires KVM or MSHV on Linux, or WHP on Windows"
+                    || (cfg!(windows) && name == "whp")
+                    || (cfg!(all(target_os = "macos", guest_arch = "x86_64")) && name == "hvf"),
+                "microVM requires KVM or MSHV on Linux, WHP on Windows, or x86 HVF on macOS"
             );
         }
 
@@ -734,8 +735,8 @@ impl Options {
                 );
             } else {
                 anyhow::ensure!(
-                    cfg!(any(target_os = "linux", windows)),
-                    "live microVM control consoles require Linux Unix sockets or Windows named pipes"
+                    cfg!(any(unix, windows)),
+                    "live microVM control consoles require Unix sockets or Windows named pipes"
                 );
                 anyhow::ensure!(
                     self.microvm.microvm_control_auth_stdin,
@@ -1580,7 +1581,7 @@ mod tests {
             "--microvm-control-auth-stdin",
         ])
         .unwrap();
-        if cfg!(any(target_os = "linux", windows)) {
+        if cfg!(all(guest_arch = "x86_64", any(unix, windows))) {
             valid_restore_control_console
                 .validate_microvm_options()
                 .unwrap();
@@ -1747,7 +1748,7 @@ mod tests {
         assert!(options.microvm.microvm_control_auth_stdin);
         assert_eq!(
             options.validate_microvm_options().is_ok(),
-            cfg!(any(target_os = "linux", windows))
+            cfg!(all(guest_arch = "x86_64", any(unix, windows)))
         );
         assert!(
             options

@@ -135,9 +135,9 @@ impl VmController {
             anyhow::ensure!(
                 matches!(
                     self.microvm.source_hypervisor.as_str(),
-                    "kvm" | "mshv" | "whp"
+                    "kvm" | "mshv" | "whp" | "hvf"
                 ),
-                "microVM snapshot source backend must be KVM, MSHV, or WHP"
+                "microVM snapshot source backend must be KVM, MSHV, WHP, or HVF"
             );
             anyhow::ensure!(
                 self.microvm.resources.sandbox_block_sources.is_empty()

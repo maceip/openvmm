@@ -508,13 +508,18 @@ impl std::str::FromStr for MicrovmNetworkConfig {
 /// Returns the pinned virtio-net IRQ for the selected microVM backend.
 pub fn microvm_virtio_net_irq(hypervisor_id: Option<&str>) -> anyhow::Result<u32> {
     match hypervisor_id {
-        Some("kvm" | "mshv") => Ok(MICROVM_VIRTIO_NET_KVM_IRQ),
+        Some("kvm" | "mshv" | "hvf") => Ok(MICROVM_VIRTIO_NET_KVM_IRQ),
         Some("whp") => Ok(MICROVM_VIRTIO_NET_WHP_IRQ),
         Some(other) => anyhow::bail!("microVM virtio-net does not support hypervisor '{other}'"),
         None if cfg!(target_os = "linux") => Ok(MICROVM_VIRTIO_NET_KVM_IRQ),
         None if cfg!(windows) => Ok(MICROVM_VIRTIO_NET_WHP_IRQ),
+        None if cfg!(all(target_os = "macos", guest_arch = "x86_64")) => {
+            Ok(MICROVM_VIRTIO_NET_KVM_IRQ)
+        }
         None => {
-            anyhow::bail!("microVM virtio-net requires an explicit KVM, MSHV, or WHP hypervisor")
+            anyhow::bail!(
+                "microVM virtio-net requires an explicit KVM, MSHV, WHP, or HVF hypervisor"
+            )
         }
     }
 }
@@ -1176,8 +1181,8 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
     validate_machine_load_mode(config.machine_profile, &config.load_mode)?;
     if let Some(hypervisor_id) = hypervisor_id {
         anyhow::ensure!(
-            matches!(hypervisor_id, "kvm" | "mshv" | "whp"),
-            "microVM requires the KVM, MSHV, or WHP hypervisor"
+            matches!(hypervisor_id, "kvm" | "mshv" | "whp" | "hvf"),
+            "microVM requires the KVM, MSHV, WHP, or HVF hypervisor"
         );
     }
     anyhow::ensure!(
