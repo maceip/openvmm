@@ -952,7 +952,7 @@ pub fn microvm_machine_contract(
                 attachment.required
                     && attachment.reconnect_timeout_ms == 0
                     && attachment.identity_kind == "provider"
-                    && attachment.identity == b"console"
+                    && matches!(attachment.identity.as_slice(), b"console" | b"stderr")
             }
             "discard-while-disconnected" => {
                 !attachment.required
@@ -2247,6 +2247,12 @@ mod tests {
     }
 
     fn generated_console_contract() -> SnapshotMachineContract {
+        generated_console_contract_with_attachment(microvm_console_attachment()).unwrap()
+    }
+
+    fn generated_console_contract_with_attachment(
+        console_attachment: SnapshotAttachment,
+    ) -> anyhow::Result<SnapshotMachineContract> {
         microvm_machine_contract(
             "whp",
             MICROVM_BOOT_LAYOUT_VERSION,
@@ -2255,7 +2261,7 @@ mod tests {
             None,
             false,
             None,
-            Some(microvm_console_attachment()),
+            Some(console_attachment),
             None,
             Vec::new(),
             1,
@@ -2280,7 +2286,6 @@ mod tests {
             Some(1_000_000_000),
             vec![1, 2, 3],
         )
-        .unwrap()
     }
 
     fn generated_control_console_contract_with_attachment(
@@ -2516,6 +2521,31 @@ mod tests {
                 microvm_control_console_attachment()
             ]
         );
+    }
+
+    #[test]
+    fn generated_console_contract_accepts_only_supported_inherited_providers() {
+        let mut attachment = microvm_console_attachment();
+        attachment.reconnect_policy = "require-inherited-attachment".to_owned();
+        attachment.identity_kind = "provider".to_owned();
+        attachment.required = true;
+        for provider in [b"console".as_slice(), b"stderr".as_slice()] {
+            attachment.identity = provider.to_vec();
+            let contract = generated_console_contract_with_attachment(attachment.clone()).unwrap();
+            validate_supported_microvm_contract(&contract).unwrap();
+            assert_eq!(contract.attachments, [attachment.clone()]);
+        }
+        for provider in [
+            b"stdout".as_slice(),
+            b"arbitrary".as_slice(),
+            b"".as_slice(),
+        ] {
+            attachment.identity = provider.to_vec();
+            assert!(generated_console_contract_with_attachment(attachment.clone()).is_err());
+        }
+        attachment.identity = b"stderr".to_vec();
+        attachment.required = false;
+        assert!(generated_console_contract_with_attachment(attachment).is_err());
     }
 
     #[test]
