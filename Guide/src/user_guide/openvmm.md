@@ -11,7 +11,7 @@ At the moment, OpenVMM can be built and run on the following host platforms:
 | Windows | x64 / Aarch64 | WHP (Windows Hypervisor Platform) |
 | Linux   | x64 / Aarch64 | KVM                               |
 |         | x64 / Aarch64 | MSHV (Microsoft Hypervisor)       |
-| macOS   | Aarch64       | Hypervisor.framework              |
+| macOS   | x86_64, Aarch64 | Hypervisor.framework              |
 
 When compiled, OpenVMM consists of a single standalone `openvmm` / `openvmm.exe`
 executable.[^dlls]
@@ -81,3 +81,12 @@ upgrading.
 
 [^dlls]: though, depending on the platform and compiled-in feature-set, some
     additional DLLs and/or system libraries may need to be installed.
+
+Intel macOS uses the native VT-x Hypervisor.framework backend with software
+APIC emulation. It supports unenlightened VTL0 guests, including the microVM
+machine profile. Guest CPU features are limited to state that the backend can
+capture: x87 and SSE are preserved; AVX, nested virtualization and Hyper-V
+synthetic devices are unavailable. Snapshots bind the host TSC frequency and
+CPU contract, and retain pending interrupts, architectural registers and FPU
+state. The executable needs the macOS hypervisor entitlement on both Intel
+and Apple Silicon.

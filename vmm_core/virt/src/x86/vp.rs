@@ -365,6 +365,9 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Registers {
 #[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
 pub struct Activity {
+    /// A software APIC ExtINT awaits acknowledgement from the PIC.
+    #[mesh(7)]
+    pub extint_pending: bool,
     #[mesh(1)]
     pub mp_state: MpState,
     #[mesh(2)]
@@ -541,6 +544,7 @@ impl HvRegisterState<HvX64RegisterName, 4> for Activity {
         *self = Self {
             mp_state,
             nmi_pending: false,
+            extint_pending: false,
             nmi_masked: interrupt_state.nmi_masked(),
             interrupt_shadow: interrupt_state.interrupt_shadow(),
             pending_event,
@@ -565,6 +569,7 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Activity {
         Self {
             mp_state,
             nmi_pending: false,
+            extint_pending: false,
             nmi_masked: false,
             interrupt_shadow: false,
             pending_event: None,

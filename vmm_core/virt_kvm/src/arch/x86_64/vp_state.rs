@@ -312,6 +312,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         };
 
         Ok(vp::Activity {
+            extint_pending: false,
             mp_state,
             nmi_pending: events.nmi.pending != 0,
             nmi_masked: events.nmi.masked != 0,
@@ -329,7 +330,13 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             interrupt_shadow,
             pending_event,
             pending_interruption,
+            extint_pending,
         } = *value;
+        if extint_pending {
+            return Err(KvmError::InvalidState(
+                "software ExtINT cannot be restored into kernel KVM",
+            ));
+        }
 
         let state = match mp_state {
             vp::MpState::Running => kvm::KVM_MP_STATE_RUNNABLE,

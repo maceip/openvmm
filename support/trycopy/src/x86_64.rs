@@ -16,6 +16,10 @@ pub(super) fn get_context_ip(ctx: &Context) -> usize {
     {
         ctx.Rip as _
     }
+    #[cfg(target_os = "macos")]
+    {
+        ctx.__ss.__rip as _
+    }
 }
 
 pub(super) fn set_context_ip_and_result(ctx: &mut Context, ip: usize, result: Option<isize>) {
@@ -36,6 +40,14 @@ pub(super) fn set_context_ip_and_result(ctx: &mut Context, ip: usize, result: Op
             ctx.Rcx = result as _;
         }
         ctx.EFlags &= !DIRECTION_FLAG_MASK;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        ctx.__ss.__rip = ip as _;
+        if let Some(result) = result {
+            ctx.__ss.__rcx = result as _;
+        }
+        ctx.__ss.__rflags &= !u64::from(DIRECTION_FLAG_MASK);
     }
 }
 

@@ -153,6 +153,6 @@ vm_resource::register_static_resolvers! {
     #[cfg(all(target_os = "windows", feature = "virt_whp", guest_is_native))]
     hypervisor_resolvers::whp::WhpResolver,
 
-    #[cfg(all(target_os = "macos", guest_arch = "aarch64", guest_is_native, feature = "virt_hvf"))]
+    #[cfg(all(target_os = "macos", guest_is_native, feature = "virt_hvf"))]
     hypervisor_resolvers::hvf::HvfResolver,
 }

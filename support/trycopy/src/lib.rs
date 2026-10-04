@@ -505,6 +505,8 @@ unsafe fn install_signal_handlers() {
             si_code: info.si_code as u32,
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             trapno: ctx.gregs[libc::REG_TRAPNO as usize] as u8,
+            #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+            trapno: ctx.__es.__trapno as u8,
             #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
             esr: {
                 const ESR_MAGIC: u32 = 0x45535201;
@@ -616,17 +618,23 @@ unsafe fn install_signal_handlers() {
     }
 }
 
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+type RecoveryAddress = usize;
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+type RecoveryAddress = i32;
+
+// Intel Mach-O uses absolute pointers because its linker cannot resolve
+// cross-section 32-bit subtraction relocations. Other targets use offsets.
 #[repr(C)]
 struct RecoveryDescriptor {
-    /// Start of the faulting code region (relative to the address of this
-    /// field).
-    start: i32,
-    /// End of the faulting code region (relative to the address of this field).
-    end: i32,
-    /// Recovery address (relative to the address of this field). If zero,
+    /// Start of the faulting code region.
+    start: RecoveryAddress,
+    /// End of the faulting code region.
+    end: RecoveryAddress,
+    /// Recovery address. If zero,
     /// then the instruction pointer will be set to `end` and the result
     /// register will be set to -1.
-    recover: i32,
+    recover: RecoveryAddress,
 }
 
 /// Returns the recovery descriptor table, found by linker-defined symbols
@@ -648,9 +656,23 @@ fn recovery_table() -> &'static [RecoveryDescriptor] {
     #[cfg(target_os = "macos")]
     unsafe extern "C" {
         // The linker on macOS uses a special naming scheme for section symbols.
-        #[link_name = "\x01section$start$__TEXT$__try_copy"]
+        #[cfg_attr(
+            target_arch = "aarch64",
+            link_name = "\x01section$start$__TEXT$__try_copy"
+        )]
+        #[cfg_attr(
+            target_arch = "x86_64",
+            link_name = "\x01section$start$__DATA_CONST$__try_copy"
+        )]
         static START_TRY_COPY: [RecoveryDescriptor; 0];
-        #[link_name = "\x01section$end$__TEXT$__try_copy"]
+        #[cfg_attr(
+            target_arch = "aarch64",
+            link_name = "\x01section$end$__TEXT$__try_copy"
+        )]
+        #[cfg_attr(
+            target_arch = "x86_64",
+            link_name = "\x01section$end$__DATA_CONST$__try_copy"
+        )]
         static STOP_TRY_COPY: [RecoveryDescriptor; 0];
     }
 
@@ -750,7 +772,10 @@ fn recover(context: &mut Context, failure: AccessFailure) -> bool {
 
     // Search for a matching recovery descriptor.
     for r in recovery_table() {
-        let reloc = |addr: &i32| -> usize {
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        let reloc = |addr: &RecoveryAddress| -> usize { *addr };
+        #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+        let reloc = |addr: &RecoveryAddress| -> usize {
             core::ptr::from_ref(addr)
                 .addr()
                 .wrapping_add_signed(*addr as isize)
@@ -795,12 +820,19 @@ macro_rules! recovery_section {
     };
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 macro_rules! recovery_section {
     () => {
         // __TEXT = read-only segment, regular = regular section, no_dead_strip
         // = don't discard on linking.
         "__TEXT,__try_copy,regular,no_dead_strip"
+    };
+}
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+macro_rules! recovery_section {
+    () => {
+        "__DATA_CONST,__try_copy,regular,no_dead_strip"
     };
 }
 
@@ -816,6 +848,7 @@ macro_rules! recovery_section {
 ///
 /// FUTURE: remove this extra result register behavior once Rust supports
 /// `label` with inline asm blocks that have outputs.
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 macro_rules! recovery_descriptor {
     ($start:tt, $stop:tt, $recover:tt) => {
         concat!(
@@ -834,6 +867,19 @@ macro_rules! recovery_descriptor {
             " - .\n",
             ".popsection"
         )
+    };
+}
+
+// Mach-O x86 cannot link the local-symbol subtractor relocations emitted for
+// 32-bit cross-section offsets. Absolute pointers use supported dyld fixups
+// and live in DATA_CONST, which is read-only once those fixups are applied.
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+macro_rules! recovery_descriptor {
+    ($start:tt, $stop:tt, ".") => { recovery_descriptor!(@entry $start, $stop, "0") };
+    ($start:tt, $stop:tt, $recover:tt) => { recovery_descriptor!(@entry $start, $stop, $recover) };
+    (@entry $start:tt, $stop:tt, $recover:tt) => {
+        concat!(".pushsection ", crate::recovery_section!(), "\n.balign 8\n.quad ",
+            $start, "\n.quad ", $stop, "\n.quad ", $recover, "\n.popsection")
     };
 }
 

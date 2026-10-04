@@ -9703,16 +9703,22 @@ dependencies = [
  "hv1_hypercall",
  "hvdef",
  "inspect",
+ "libc",
  "memory_range",
  "open_enum",
  "parking_lot",
+ "safe_intrinsics",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
  "virt",
+ "virt_support_apic",
  "virt_support_gic",
+ "virt_support_x86emu",
  "vm_topology",
  "vmcore",
+ "x86defs",
+ "x86emu",
 ]
 
 [[package]]

@@ -3,12 +3,7 @@
 
 //! HVF (macOS Hypervisor.framework) hypervisor backend.
 
-#![cfg(all(
-    target_os = "macos",
-    guest_arch = "aarch64",
-    guest_is_native,
-    feature = "virt_hvf"
-))]
+#![cfg(all(target_os = "macos", guest_is_native, feature = "virt_hvf"))]
 
 use hypervisor_resources::HvfHandle;
 use hypervisor_resources::HypervisorKind;
