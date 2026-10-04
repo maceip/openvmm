@@ -495,6 +495,8 @@ impl Drop for HvfProcessor<'_> {
 
 struct Vcpu {
     id: u32,
+    cr0: crate::intel::ControlRegisterPolicy,
+    cr4: crate::intel::ControlRegisterPolicy,
     // Hypervisor.framework VP APIs must execute on the owning thread.
     _thread: PhantomData<Rc<()>>,
     quantum: u64,
@@ -502,6 +504,14 @@ struct Vcpu {
 
 impl Vcpu {
     fn new() -> Result<Self, Error> {
+        let mut fixed = [0; 4];
+        for (field, value) in (11..=14).zip(&mut fixed) {
+            // SAFETY: writable result pointer; capability IDs are from hv_vmx.h.
+            check(
+                unsafe { abi::hv_vmx_read_capability(field, value) },
+                "read VMX control-register capability",
+            )?;
+        }
         let mut id = abi::INVALID_VCPU;
         // SAFETY: writable ID pointer; called on the binding thread.
         check(unsafe { abi::hv_vcpu_create(&mut id, 0) }, "create VP")?;
@@ -516,6 +526,8 @@ impl Vcpu {
         let quantum = 1_000_000u64 * u64::from(timebase.denom) / u64::from(timebase.numer);
         let cpu = Self {
             id,
+            cr0: crate::intel::ControlRegisterPolicy::cr0(fixed[0], fixed[1]),
+            cr4: crate::intel::ControlRegisterPolicy::cr4(fixed[2], fixed[3]),
             _thread: PhantomData,
             quantum: quantum.max(1),
         };
@@ -528,8 +540,8 @@ impl Vcpu {
         cpu.control(0x400c, 0)?; // retain the framework's required VM-exit controls
         cpu.control(0x4012, crate::intel::INITIAL_ENTRY_CONTROLS)?;
         cpu.vmcs_set(0x4004, 0)?;
-        cpu.vmcs_set(0x6000, 0)?;
-        cpu.vmcs_set(0x6002, 0)?;
+        cpu.vmcs_set(0x6000, cpu.cr0.mask)?;
+        cpu.vmcs_set(0x6002, cpu.cr4.mask)?;
         for &msr in crate::intel::NATIVE_MSRS {
             // SAFETY: architectural native MSRs, retained and switched by HVF.
             check(
@@ -540,6 +552,12 @@ impl Vcpu {
         Ok(cpu)
     }
     fn reg(&self, register: u32) -> Result<u64, Error> {
+        if register == 36 {
+            return Ok(self.cr0.guest(self.vmcs(0x6800)?, self.vmcs(0x6004)?));
+        }
+        if register == 40 {
+            return Ok(self.cr4.guest(self.vmcs(0x6804)?, self.vmcs(0x6006)?));
+        }
         let mut value = 0;
         // SAFETY: writable result pointer and owning thread.
         check(
@@ -549,6 +567,17 @@ impl Vcpu {
         Ok(value)
     }
     fn set_reg(&self, register: u32, value: u64) -> Result<(), Error> {
+        let value = match register {
+            36 => {
+                self.vmcs_set(0x6004, value)?;
+                self.cr0.hardware(value)
+            }
+            40 => {
+                self.vmcs_set(0x6006, value)?;
+                self.cr4.hardware(value)
+            }
+            _ => value,
+        };
         // SAFETY: owning thread and scalar arguments.
         check(
             unsafe { abi::hv_vcpu_write_register(self.id, register, value) },
@@ -620,6 +649,76 @@ impl Vcpu {
     }
     fn advance(&self) -> Result<(), Error> {
         self.set_reg(0, self.reg(0)?.wrapping_add(self.vmcs(0x440c)?))
+    }
+    fn guest_control_write(&self, register: u32, value: u64) -> Result<bool, Error> {
+        let efer = self.efer()?;
+        let valid = match register {
+            36 => {
+                self.cr0.supports(value)
+                    && value & !0xe005003f == 0
+                    && (value & (1 << 31) == 0 || value & 1 != 0)
+                    && (value & (1 << 29) == 0 || value & (1 << 30) != 0)
+                    && (value & (1 << 31) == 0
+                        || efer & (1 << 8) == 0
+                        || self.reg(40)? & (1 << 5) != 0)
+            }
+            40 => self.cr4.supports(value) && (efer & (1 << 10) == 0 || value & (1 << 5) != 0),
+            _ => false,
+        };
+        if !valid {
+            self.inject(13, 3, Some(0))?;
+            return Ok(false);
+        }
+        self.set_reg(register, value)?;
+        if register == 36 {
+            self.set_efer(crate::intel::efer_for_cr0(efer, value))?;
+        }
+        // SAFETY: owning VP thread; changed paging state invalidates translations.
+        check(
+            unsafe { abi::hv_vcpu_invalidate_tlb(self.id) },
+            "invalidate TLB",
+        )?;
+        Ok(true)
+    }
+    fn control_access(&self, q: u64) -> Result<bool, Error> {
+        let cr = q & 0xf;
+        let gp = [2, 3, 4, 5, 8, 9, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17][((q >> 8) & 15) as usize];
+        let access = (q >> 4) & 3;
+        let register = match cr {
+            0 => 36,
+            4 => 40,
+            8 => 49,
+            _ => {
+                return Err(
+                    anyhow::anyhow!("unexpected Intel HVF control-register exit {q:#x}").into(),
+                );
+            }
+        };
+        let value = match access {
+            0 => self.reg(gp)?,
+            1 => {
+                let value = self.reg(register)?;
+                self.set_reg(gp, if cr == 8 { value >> 4 } else { value })?;
+                return Ok(true);
+            }
+            2 if cr == 0 => self.reg(36)? & !(1 << 3),
+            3 if cr == 0 => crate::intel::cr0_for_lmsw(self.reg(36)?, q >> 16),
+            _ => {
+                return Err(
+                    anyhow::anyhow!("invalid Intel HVF control-register access {q:#x}").into(),
+                );
+            }
+        };
+        if cr == 8 {
+            if value > 15 {
+                self.inject(13, 3, Some(0))?;
+                return Ok(false);
+            }
+            self.set_reg(49, value << 4)?;
+            Ok(true)
+        } else {
+            self.guest_control_write(register, value)
+        }
     }
     fn inject(&self, vector: u8, kind: u32, error: Option<u32>) -> Result<(), Error> {
         self.vmcs_set(
@@ -960,41 +1059,12 @@ impl HvfProcessor<'_> {
                         .vcpu
                         .vmcs(0x6400)
                         .map_err(|error| dev.fatal_error(error.into()))?;
-                    if q & 0xf != 8 {
-                        return Err(dev.fatal_error(
-                            anyhow::anyhow!("unexpected Intel HVF control-register exit {q:#x}")
-                                .into(),
-                        ));
-                    }
-                    let reg = ((q >> 8) & 15) as usize;
-                    let gp = [2, 3, 4, 5, 8, 9, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17][reg];
-                    if q & (3 << 4) == 0 {
-                        let cr8 = self
-                            .vcpu
-                            .reg(gp)
-                            .map_err(|error| dev.fatal_error(error.into()))?;
-                        if cr8 > 15 {
-                            self.vcpu
-                                .inject(13, 3, Some(0))
-                                .map_err(|error| dev.fatal_error(error.into()))?;
-                            continue;
-                        }
-                        self.vcpu
-                            .set_reg(49, cr8 << 4)
-                            .map_err(|error| dev.fatal_error(error.into()))?;
-                    } else if q & (3 << 4) == 1 << 4 {
-                        let cr8 = self
-                            .vcpu
-                            .reg(49)
-                            .map_err(|error| dev.fatal_error(error.into()))?
-                            >> 4;
-                        self.vcpu
-                            .set_reg(gp, cr8)
-                            .map_err(|error| dev.fatal_error(error.into()))?;
-                    } else {
-                        return Err(
-                            dev.fatal_error(anyhow::anyhow!("invalid Intel HVF CR8 access").into())
-                        );
+                    if !self
+                        .vcpu
+                        .control_access(q)
+                        .map_err(|error| dev.fatal_error(error.into()))?
+                    {
+                        continue;
                     }
                     self.vcpu
                         .advance()

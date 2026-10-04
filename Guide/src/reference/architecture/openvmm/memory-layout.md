@@ -311,6 +311,15 @@ callers can see the full occupied map.
 
 ## Intel macOS guest memory-type state
 
+Intel VMX requires fixed bits in hardware CR0 and CR4 even when the guest's
+architectural value omits them. The HVF backend reads the native fixed-bit
+capabilities, sets the required hardware bits, and retains the guest values in
+VMCS read shadows. Snapshot capture merges hardware state with those shadows;
+restore applies the same policy. Cache-disable bits remain virtual. CR0 paging
+changes exit to the backend so it can update EFER.LMA and the VM-entry mode.
+MOV to control registers, CLTS, and LMSW preserve those rules, and invalid guest
+writes inject a general-protection fault.
+
 The Intel Hypervisor.framework backend keeps the guest page attribute table
 (PAT) in software because the framework exposes neither the PAT MSR nor the
 guest PAT VMCS field. Guest reads, writes, and saved-state access use the same
