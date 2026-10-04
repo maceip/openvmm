@@ -472,6 +472,22 @@ fn microvm_console_attachment_from_snapshot_with_identity(
     );
     let identity = std::str::from_utf8(&attachment.identity)
         .context("snapshot microVM console identity is not valid UTF-8")?;
+    if let Some(requested) = requested {
+        let replacement = if control_console {
+            microvm_control_console_attachment_from_cli(requested)?
+        } else {
+            microvm_console_attachment_from_cli(requested)?
+        };
+        if openvmm_helpers::snapshot::microvm::console_listener_replacement_matches(
+            attachment,
+            &replacement.2,
+        ) {
+            // The caller explicitly approved a fresh listener. Its endpoint is
+            // canonicalized here and checked against the snapshot namespace by
+            // MicrovmBuildContext; the source listener's directory may be gone.
+            return Ok(replacement);
+        }
+    }
     if attachment.reconnect_policy == "reconnect-client" {
         anyhow::ensure!(
             requested.is_some(),
@@ -759,6 +775,101 @@ mod tests {
         assert!(
             validate_microvm_console_attachment_namespace(&attachment, Path::new("snapshot"))
                 .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn approved_control_listener_rebinds_after_the_source_directory_is_removed() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let source = tempfile::tempdir().unwrap();
+        fs_err::set_permissions(source.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let source_endpoint = SerialConfigCli::Pipe(source.path().join("source.sock"));
+        let (_, _, saved) = microvm_control_console_attachment_from_cli(&source_endpoint).unwrap();
+        let (_, _, saved_boot) = microvm_console_attachment_from_cli(&SerialConfigCli::Pipe(
+            source.path().join("boot.sock"),
+        ))
+        .unwrap();
+        source.close().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        fs_err::set_permissions(destination.path(), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let requested = SerialConfigCli::Pipe(destination.path().join("fresh.sock"));
+        let (effective, _, rebound) = microvm_console_attachment_from_snapshot_with_identity(
+            &saved,
+            Some(&requested),
+            MICROVM_CONTROL_CONSOLE_STABLE_ID,
+            MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND,
+            true,
+        )
+        .unwrap();
+        assert!(matches!(effective, SerialConfigCli::Pipe(_)));
+        assert_ne!(rebound.identity, saved.identity);
+        validate_microvm_console_attachment_namespace(
+            &rebound,
+            &destination.path().join("snapshot"),
+        )
+        .unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        assert!(
+            validate_microvm_console_attachment_namespace(
+                &rebound,
+                &outside.path().join("snapshot")
+            )
+            .is_err()
+        );
+        assert!(
+            microvm_console_attachment_from_snapshot_with_identity(
+                &saved,
+                None,
+                MICROVM_CONTROL_CONSOLE_STABLE_ID,
+                MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND,
+                true,
+            )
+            .is_err()
+        );
+        let (_, _, rebound_boot) = microvm_console_attachment_from_snapshot(
+            &saved_boot,
+            Some(&SerialConfigCli::Pipe(
+                destination.path().join("fresh-boot.sock"),
+            )),
+        )
+        .unwrap();
+        validate_microvm_console_attachment_namespace(
+            &rebound_boot,
+            &destination.path().join("snapshot"),
+        )
+        .unwrap();
+        assert_ne!(rebound_boot.identity, saved_boot.identity);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn approved_control_listener_rebinds_only_inside_the_named_pipe_namespace() {
+        let source = SerialConfigCli::Pipe("//./pipe/openvmm-microvm-source".into());
+        let (_, _, saved) = microvm_control_console_attachment_from_cli(&source).unwrap();
+        let requested = SerialConfigCli::Pipe("//./pipe/openvmm-microvm-fresh".into());
+        let (_, _, rebound) = microvm_console_attachment_from_snapshot_with_identity(
+            &saved,
+            Some(&requested),
+            MICROVM_CONTROL_CONSOLE_STABLE_ID,
+            MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND,
+            true,
+        )
+        .unwrap();
+        assert_ne!(rebound.identity, saved.identity);
+        validate_microvm_console_attachment_namespace(&rebound, Path::new("snapshot")).unwrap();
+        let outside = SerialConfigCli::Pipe("//./pipe/unrelated".into());
+        let (_, _, rebound) = microvm_console_attachment_from_snapshot_with_identity(
+            &saved,
+            Some(&outside),
+            MICROVM_CONTROL_CONSOLE_STABLE_ID,
+            MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND,
+            true,
+        )
+        .unwrap();
+        assert!(
+            validate_microvm_console_attachment_namespace(&rebound, Path::new("snapshot")).is_err()
         );
     }
 

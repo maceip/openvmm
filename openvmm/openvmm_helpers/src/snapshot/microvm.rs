@@ -1182,7 +1182,50 @@ pub fn validate_supported_microvm_contract(
     Ok(())
 }
 
-/// Validate and exactly compare an authoritative microVM machine contract.
+/// Whether an explicitly supplied console listener may replace a saved endpoint.
+/// Every attachment field except its endpoint identity must remain unchanged.
+pub fn console_listener_replacement_matches(
+    saved: &SnapshotAttachment,
+    replacement: &SnapshotAttachment,
+) -> bool {
+    let listener = match (
+        saved.stable_id.as_str(),
+        saved.kind.as_str(),
+        saved.reconnect_policy.as_str(),
+    ) {
+        ("console:microvm-virtio0", "virtio-console", "recreate-listener") => {
+            matches!(
+                saved.identity_kind.as_str(),
+                "unix-socket" | "named-pipe" | "tcp"
+            )
+        }
+        ("console:microvm-control0", "virtio-control-console", "broker-authenticated-listener") => {
+            matches!(saved.identity_kind.as_str(), "unix-socket" | "named-pipe")
+        }
+        _ => false,
+    };
+    if !listener
+        || saved.required
+        || saved.length != 0
+        || saved.reconnect_timeout_ms != 0
+        || saved.identity.is_empty()
+        || replacement.identity.is_empty()
+        || saved.identity.len() > MAX_ATTACHMENT_IDENTITY_BYTES
+        || replacement.identity.len() > MAX_ATTACHMENT_IDENTITY_BYTES
+        || std::str::from_utf8(&saved.identity).is_err()
+        || std::str::from_utf8(&replacement.identity).is_err()
+        || saved.identity.contains(&0)
+        || replacement.identity.contains(&0)
+    {
+        return false;
+    }
+    let mut expected = saved.clone();
+    expected.identity.clone_from(&replacement.identity);
+    expected == *replacement
+}
+
+/// Validate and compare an authoritative microVM machine contract. Only approved
+/// same-kind console listeners may use a fresh restore-time endpoint identity.
 pub fn validate_microvm_machine_contract(
     manifest: &SnapshotManifest,
     expected: &SnapshotMachineContract,
@@ -1265,7 +1308,12 @@ pub fn validate_microvm_machine_contract(
         "snapshot state-unit inventory or order doesn't match the requested machine"
     );
     anyhow::ensure!(
-        contract.attachments == expected.attachments,
+        contract.attachments.len() == expected.attachments.len()
+            && contract.attachments.iter().zip(&expected.attachments).all(
+                |(saved, replacement)| {
+                    saved == replacement || console_listener_replacement_matches(saved, replacement)
+                }
+            ),
         "snapshot attachment inventory doesn't match the supplied attachments"
     );
     anyhow::ensure!(
@@ -2782,7 +2830,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_microvm_console_contract_rejects_attachment_change() {
+    fn validate_microvm_console_contract_accepts_listener_endpoint_replacement() {
         let contract = generated_console_contract();
         let mut manifest = test_manifest();
         manifest.memory_size_bytes = 1024;
@@ -2790,8 +2838,61 @@ mod tests {
         manifest.machine_contract = Some(contract.clone());
         let mut expected = contract;
         expected.attachments[0].identity = b"127.0.0.1:6666".to_vec();
+        validate_microvm_machine_contract(&manifest, &expected).unwrap();
+        expected.attachments[0].reconnect_policy = "reconnect-client".to_owned();
         let error = validate_microvm_machine_contract(&manifest, &expected).unwrap_err();
         assert!(error.to_string().contains("attachment inventory"));
+    }
+
+    #[test]
+    fn listener_replacement_preserves_the_complete_attachment_contract() {
+        let saved = microvm_control_console_listener_attachment();
+        let mut replacement = saved.clone();
+        replacement.identity = b"/run/nvx/fresh-control.sock".to_vec();
+        assert!(console_listener_replacement_matches(&saved, &replacement));
+        let contract = generated_control_console_contract_with_attachment(saved.clone());
+        let mut manifest = test_manifest();
+        manifest.memory_size_bytes = 1024;
+        manifest.vp_count = 1;
+        manifest.machine_contract = Some(contract.clone());
+        let mut expected = contract;
+        expected.attachments[1] = replacement.clone();
+        validate_microvm_machine_contract(&manifest, &expected).unwrap();
+
+        let changes: [fn(&mut SnapshotAttachment); 10] = [
+            |a| a.stable_id.push_str("-other"),
+            |a| a.kind = "virtio-console".to_owned(),
+            |a| a.required = true,
+            |a| a.reconnect_policy = "recreate-listener".to_owned(),
+            |a| a.identity_kind = "named-pipe".to_owned(),
+            |a| a.length = 1,
+            |a| a.reconnect_timeout_ms = 1,
+            |a| a.identity.clear(),
+            |a| a.identity = vec![0xff],
+            |a| a.identity.push(0),
+        ];
+        for change in changes {
+            let mut changed = replacement.clone();
+            change(&mut changed);
+            assert!(!console_listener_replacement_matches(&saved, &changed));
+            expected.attachments[1] = changed;
+            assert!(validate_microvm_machine_contract(&manifest, &expected).is_err());
+        }
+        let disconnected = microvm_control_console_attachment();
+        assert!(!console_listener_replacement_matches(
+            &disconnected,
+            &replacement
+        ));
+        let mut client = microvm_console_attachment();
+        client.reconnect_policy = "reconnect-client".to_owned();
+        assert!(!console_listener_replacement_matches(&client, &client));
+        let mut inherited = microvm_console_attachment();
+        inherited.reconnect_policy = "require-inherited-attachment".to_owned();
+        inherited.identity_kind = "provider".to_owned();
+        inherited.identity = b"console".to_vec();
+        assert!(!console_listener_replacement_matches(
+            &inherited, &inherited
+        ));
     }
 
     #[test]
