@@ -513,9 +513,7 @@ pub fn microvm_virtio_net_irq(hypervisor_id: Option<&str>) -> anyhow::Result<u32
         Some(other) => anyhow::bail!("microVM virtio-net does not support hypervisor '{other}'"),
         None if cfg!(target_os = "linux") => Ok(MICROVM_VIRTIO_NET_KVM_IRQ),
         None if cfg!(windows) => Ok(MICROVM_VIRTIO_NET_WHP_IRQ),
-        None if cfg!(all(target_os = "macos", guest_arch = "x86_64")) => {
-            Ok(MICROVM_VIRTIO_NET_KVM_IRQ)
-        }
+        None if cfg!(target_os = "macos") => Ok(MICROVM_VIRTIO_NET_KVM_IRQ),
         None => {
             anyhow::bail!(
                 "microVM virtio-net requires an explicit KVM, MSHV, WHP, or HVF hypervisor"
@@ -1380,6 +1378,40 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
 mod tests {
     use super::*;
     use std::fs::File;
+    use test_with_tracing::test;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn default_macos_network_discovery_matches_explicit_hvf() {
+        let network: MicrovmNetworkConfig = "192.168.127.2/24".parse().unwrap();
+        let mut explicit = build_microvm_command_line(&[], true).unwrap();
+        let mut implicit = explicit.clone();
+        append_microvm_virtio_discovery(
+            &mut explicit,
+            Some((
+                &network,
+                microvm_virtio_net_irq(Some("hvf")).unwrap(),
+                false,
+            )),
+            false,
+            None,
+            false,
+            false,
+            &[],
+        )
+        .unwrap();
+        append_microvm_virtio_discovery(
+            &mut implicit,
+            Some((&network, microvm_virtio_net_irq(None).unwrap(), false)),
+            false,
+            None,
+            false,
+            false,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(implicit, explicit);
+    }
 
     #[test]
     fn root_workload_identity_requires_explicit_authorization() {
