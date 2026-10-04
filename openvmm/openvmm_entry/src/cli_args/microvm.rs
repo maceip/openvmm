@@ -1544,6 +1544,17 @@ mod tests {
         ])
         .unwrap();
         valid_console.validate_microvm_options().unwrap();
+        for console in ["console", "stderr", "none"] {
+            let valid_console = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--virtio-console",
+                console,
+            ])
+            .unwrap();
+            valid_console.validate_microvm_options().unwrap();
+        }
         let valid_control_console = Options::try_parse_from([
             "openvmm",
             "--machine",
@@ -1658,13 +1669,6 @@ mod tests {
                 "--machine",
                 "microvm",
                 "--virtio-console",
-                "stderr",
-            ],
-            vec![
-                "openvmm",
-                "--machine",
-                "microvm",
-                "--virtio-console",
                 "listen=tcp:127.0.0.1:5555",
                 "--virtio-console-pcie-port",
                 "port0",
@@ -1722,8 +1726,11 @@ mod tests {
                 "queues=1:10.0.0.2/24",
             ],
         ] {
-            let options = Options::try_parse_from(args).unwrap();
-            assert!(options.validate_microvm_options().is_err());
+            let options = Options::try_parse_from(&args).unwrap();
+            assert!(
+                options.validate_microvm_options().is_err(),
+                "unsupported combination was admitted: {args:?}"
+            );
         }
     }
 
