@@ -248,6 +248,11 @@ and restore requires the saved and current inventories to match exactly. A
 microVM manifest additionally records and validates the exact device inventory
 and order.
 
+The x86 processor activity state also retains a pending userspace ExtINT in
+HVF, WHP, and MSHV. Restoring it preserves a PIC acknowledgement that has not
+yet been delivered. KVM and OpenHCL hardware-isolated guests reject this state
+when their backend cannot represent it.
+
 For a phase-3 virtio console, the manifest also records its stable attachment
 ID, canonical endpoint identity, reconnect policy, requiredness, and timeout.
 Native socket, pipe, terminal, and file handles are never serialized. Restore

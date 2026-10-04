@@ -2754,6 +2754,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         let lapic = &self.vp.backing.cvm.lapics[self.vtl];
 
         Ok(vp::Activity {
+            extint_pending: false,
             mp_state: lapic.activity,
             nmi_pending: lapic.nmi_pending,
             nmi_masked: false,          // TODO SNP
@@ -2764,7 +2765,11 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
     }
 
     fn set_activity(&mut self, value: &vp::Activity) -> Result<(), Self::Error> {
+        if value.extint_pending {
+            return Err(vp_state::Error::Unimplemented("software ExtINT restore"));
+        }
         let &vp::Activity {
+            extint_pending: _,
             mp_state,
             nmi_pending,
             nmi_masked: _,           // TODO SNP

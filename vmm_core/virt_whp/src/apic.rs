@@ -177,11 +177,12 @@ impl<T: CpuIo> ApicClient for WhpApicClient<'_, T> {
 
 impl WhpProcessor<'_> {
     pub(crate) fn save_activity(&mut self, vtl: Vtl) -> Result<vp::Activity, Error> {
-        let activity = match self.vp.partition.vtlp(vtl).lapic {
+        let mut activity = match self.vp.partition.vtlp(vtl).lapic {
             LocalApicKind::Emulated(_) => {
                 let activity: vp::Activity = self.vp.get_register_state(vtl)?;
                 let lapic = self.state.vtls[vtl].lapic.as_ref().unwrap();
                 vp::Activity {
+                    extint_pending: false,
                     mp_state: if lapic.startup_suspend {
                         vp::MpState::WaitForSipi
                     } else if self.state.halted {
@@ -206,6 +207,7 @@ impl WhpProcessor<'_> {
                 activity
             }
         };
+        activity.extint_pending = self.vp.vplc(vtl).extint_pending.load(Ordering::SeqCst);
         Ok(activity)
     }
 
@@ -213,29 +215,23 @@ impl WhpProcessor<'_> {
         match self.vp.partition.vtlp(vtl).lapic {
             LocalApicKind::Emulated(_) => {
                 let lapic = self.state.vtls[vtl].lapic.as_mut().unwrap();
-                let startup_suspend;
-                let halted;
-                match value.mp_state {
-                    vp::MpState::Running => {
-                        startup_suspend = false;
-                        halted = false;
+                let (startup_suspend, halted) = match value.mp_state {
+                    vp::MpState::Running => (false, false),
+                    vp::MpState::WaitForSipi => (true, false),
+                    vp::MpState::Halted => (false, true),
+                    vp::MpState::Idle => {
+                        return Err(Error::InvalidActivityState(
+                            "idle state requires the in-hypervisor APIC",
+                        ));
                     }
-                    vp::MpState::WaitForSipi => {
-                        startup_suspend = true;
-                        halted = false;
-                    }
-                    vp::MpState::Halted => {
-                        startup_suspend = false;
-                        halted = true;
-                    }
-                    vp::MpState::Idle => unimplemented!(),
-                }
+                };
 
                 lapic.startup_suspend = startup_suspend;
                 lapic.nmi_pending = value.nmi_pending;
                 self.state.halted = halted;
 
                 let value = vp::Activity {
+                    extint_pending: false,
                     mp_state: vp::MpState::Running,
                     nmi_pending: false,
                     nmi_masked: value.nmi_masked,
@@ -261,6 +257,10 @@ impl WhpProcessor<'_> {
                 }
             }
         }
+        self.vp
+            .vplc(vtl)
+            .extint_pending
+            .store(value.extint_pending, Ordering::SeqCst);
         Ok(())
     }
 

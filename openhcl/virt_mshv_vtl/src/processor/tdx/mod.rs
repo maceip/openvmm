@@ -3937,6 +3937,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             .read_vmcs32(self.vtl, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY)
             .into();
         Ok(vp::Activity {
+            extint_pending: false,
             mp_state: lapic.activity,
             nmi_pending: lapic.nmi_pending,
             nmi_masked: interruptibility.blocked_by_nmi(),
@@ -3948,7 +3949,11 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
     }
 
     fn set_activity(&mut self, value: &vp::Activity) -> Result<(), Self::Error> {
+        if value.extint_pending {
+            return Err(vp_state::Error::Unimplemented("software ExtINT restore"));
+        }
         let &vp::Activity {
+            extint_pending: _,
             mp_state,
             nmi_pending,
             nmi_masked,

@@ -13,6 +13,7 @@ use mshv_bindings::MSHV_VP_STATE_SYNTHETIC_TIMERS;
 use mshv_bindings::mshv_get_set_vp_state;
 use std::ptr::NonNull;
 use std::sync::OnceLock;
+use std::sync::atomic::Ordering;
 use virt::state::HvRegisterState;
 use virt::vp::ApicRegisters;
 use virt::x86::vp;
@@ -201,6 +202,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         // The NMI pending bit is not part of the register state; it lives
         // in the APIC page.
         activity.nmi_pending = self.get_lapic()?.hv_apic_nmi_pending();
+        activity.extint_pending = self.inner.extint_pending.load(Ordering::Acquire);
         Ok(activity)
     }
 
@@ -213,6 +215,9 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
             lapic.set_hv_apic_nmi_pending(value.nmi_pending);
             self.set_lapic(&lapic)?;
         }
+        self.inner
+            .extint_pending
+            .store(value.extint_pending, Ordering::Release);
         Ok(())
     }
 

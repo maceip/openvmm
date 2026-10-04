@@ -836,6 +836,8 @@ struct WhpVpRef<'a> {
 // TODO: Chunk this up into smaller types.
 #[derive(Error, Debug)]
 pub enum Error {
+    #[error("invalid processor activity state: {0}")]
+    InvalidActivityState(&'static str),
     #[error("whp error, failed to {operation}")]
     Whp {
         operation: &'static str,
