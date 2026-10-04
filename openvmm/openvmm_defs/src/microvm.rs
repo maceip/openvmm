@@ -905,13 +905,22 @@ pub fn append_microvm_processor_limit(
 }
 
 /// Appends the host-owned fixed workload identity to a microVM command line.
+/// Root requires explicit caller authorization and a paired UID and GID of zero.
 pub fn append_microvm_workload_identity(
     cmdline: &mut String,
     uid: u32,
     gid: u32,
+    allow_root: bool,
 ) -> anyhow::Result<()> {
-    anyhow::ensure!(uid != 0, "microVM workload UID must be nonzero");
-    anyhow::ensure!(gid != 0, "microVM workload GID must be nonzero");
+    let authorized_root = allow_root && uid == 0 && gid == 0;
+    anyhow::ensure!(
+        uid != 0 || authorized_root,
+        "microVM workload UID must be nonzero"
+    );
+    anyhow::ensure!(
+        gid != 0 || authorized_root,
+        "microVM workload GID must be nonzero"
+    );
     write!(cmdline, " nvx_workload_uid={uid} nvx_workload_gid={gid}")?;
     anyhow::ensure!(
         cmdline.len() < MICROVM_COMMAND_LINE_MAX_SIZE,
@@ -1366,6 +1375,23 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
 mod tests {
     use super::*;
     use std::fs::File;
+
+    #[test]
+    fn root_workload_identity_requires_explicit_authorization() {
+        for (uid, gid, allow_root) in [(0, 0, false), (0, 1, true), (1, 0, true)] {
+            let mut command_line = String::new();
+            assert!(
+                append_microvm_workload_identity(&mut command_line, uid, gid, allow_root).is_err()
+            );
+            assert!(command_line.is_empty());
+        }
+        let mut root = String::new();
+        append_microvm_workload_identity(&mut root, 0, 0, true).unwrap();
+        assert_eq!(root, " nvx_workload_uid=0 nvx_workload_gid=0");
+        let mut ordinary = String::new();
+        append_microvm_workload_identity(&mut ordinary, 65534, 65534, false).unwrap();
+        assert_eq!(ordinary, " nvx_workload_uid=65534 nvx_workload_gid=65534");
+    }
 
     fn linux_load_mode(
         boot_mode: LinuxDirectBootMode,

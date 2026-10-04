@@ -267,7 +267,9 @@ describes the source definitions.
   pre-mount boundary and records that restore must supply a fresh scratch.
 * `--microvm-workload-identity <UID:GID>`: Add a fixed non-root numeric
   workload identity to the host-owned microVM command line. UID and GID zero
-  are rejected. The guest workload supervisor must resolve both values in the
+  are rejected in numeric arguments. The explicit `unsafe-root` spelling selects
+  UID and GID zero for a deliberately unconfined isolation control; its authorization
+  is retained when building the guest command line. The guest workload supervisor must resolve both values in the
   workload root before launch and fail closed when either identity is
   unavailable. Workload requests cannot replace this identity. Snapshot
   restore takes the captured identity from the authoritative command line and

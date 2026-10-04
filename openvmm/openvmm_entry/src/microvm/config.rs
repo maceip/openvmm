@@ -816,6 +816,7 @@ fn build_effective_microvm_command_line(
             &mut cmdline,
             identity.uid,
             identity.gid,
+            identity.uid == 0 && identity.gid == 0,
         )?;
     }
     if let Some(lifecycle) = lifecycle {
@@ -870,6 +871,26 @@ mod tests {
                 None,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn explicitly_selected_root_identity_reaches_the_guest() {
+        let identity = "unsafe-root".parse().unwrap();
+        let command_line = build_effective_microvm_command_line(
+            &["nvx_profile=risky".to_owned()],
+            1,
+            false,
+            false,
+            Some(identity),
+            None,
+        )
+        .unwrap();
+        assert!(command_line.contains("nvx_workload_uid=0 nvx_workload_gid=0"));
+        assert!(
+            "0:0"
+                .parse::<cli_args::microvm::MicrovmWorkloadIdentityCli>()
+                .is_err()
         );
     }
 
