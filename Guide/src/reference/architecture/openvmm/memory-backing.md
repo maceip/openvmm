@@ -25,7 +25,11 @@ the OpenVMM process alone and cannot be handed out. It is selected with
 `shared=on|off` and defaults to `on`.
 
 **Shared** memory is backed by such an object — a `memfd` on Linux, or a
-pagefile-backed section on Windows. Because there is a real, shareable backing
+pagefile-backed section on Windows. On Apple Silicon macOS it uses a POSIX
+shared-memory object. Intel macOS uses a private, unlinked temporary file because
+Intel Hypervisor.framework rejects POSIX shared-memory objects when mapping guest
+RAM. The file remains shareable through its descriptor; its storage is released
+when the last descriptor closes. Because there is a real, shareable backing
 object behind every guest page, shared memory is required for the features that
 need to hand that object to something else:
 

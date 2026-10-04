@@ -349,7 +349,7 @@ impl SparseMapping {
         Ok(())
     }
 
-    /// Decommits a range of memory, releasing physical pages back to the host.
+    /// Decommits a range of anonymous memory, releasing physical pages to the host.
     ///
     /// The virtual address range remains accessible; the next access will get
     /// fresh zero pages from the kernel.
@@ -358,6 +358,19 @@ impl SparseMapping {
         if len == 0 {
             return Ok(());
         }
+        #[cfg(target_os = "macos")]
+        // Darwin's MADV_DONTNEED is advisory and retains old bytes. Replace the
+        // anonymous range to provide the promised fresh zero pages immediately.
+        // SAFETY: the address and length have been validated above.
+        unsafe {
+            self.mmap_anonymous(
+                offset,
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE,
+            )?;
+        }
+        #[cfg(not(target_os = "macos"))]
         // SAFETY: the address and length have been validated above.
         unsafe {
             let addr = self.address.add(offset);
@@ -482,7 +495,18 @@ fn new_memfd(name: &str, flags: libc::c_uint) -> io::Result<File> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+fn new_memfd(_name: &str) -> io::Result<File> {
+    // Intel Hypervisor.framework rejects POSIX shm objects with HV_ERROR when
+    // mapping guest RAM. An unlinked regular file retains shared mappings and
+    // FD-based snapshot transfer while providing a supported VM object.
+    tempfile::tempfile()
+}
+
+#[cfg(all(
+    not(target_os = "linux"),
+    not(all(target_os = "macos", target_arch = "x86_64"))
+))]
 fn new_memfd(_name: &str) -> io::Result<File> {
     // Use a random name because shm_open creates objects in a global namespace.
     // A predictable name would allow other processes to collide with or squat
