@@ -1336,6 +1336,7 @@ impl WhpPartitionInner {
                 // GIC state save/restore is not implemented for this backend.
                 gic_max_spis: 0,
                 virtual_timer_save: false,
+                native_state_save: false,
                 extended_system_registers_save: false,
             }
         };

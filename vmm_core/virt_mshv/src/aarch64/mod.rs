@@ -175,6 +175,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             // GIC state save/restore is not implemented for this backend.
             gic_max_spis: 0,
             virtual_timer_save: false,
+            native_state_save: false,
             extended_system_registers_save: false,
         };
 
@@ -316,6 +317,13 @@ impl virt::irqcon::ControlGic for MshvPartitionInner {
 }
 
 impl virt::aarch64::vm::AccessVmState for &'_ MshvPartition {
+    fn native(&mut self) -> Result<virt::aarch64::vm::NativeState, Self::Error> {
+        Err(ErrorInner::NotSupported.into())
+    }
+    fn set_native(&mut self, _value: &virt::aarch64::vm::NativeState) -> Result<(), Self::Error> {
+        Err(ErrorInner::NotSupported.into())
+    }
+
     type Error = Error;
 
     fn caps(&self) -> &virt::PartitionCapabilities {

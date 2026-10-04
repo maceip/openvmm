@@ -114,6 +114,8 @@ mod ioctl {
     ioctl_write_ptr!(kvm_get_reg, KVMIO, 0xab, kvm_one_reg);
     ioctl_write_ptr!(kvm_set_reg, KVMIO, 0xac, kvm_one_reg);
     #[cfg(target_arch = "aarch64")]
+    ioctl_readwrite!(kvm_get_reg_list, KVMIO, 0xb0, kvm_reg_list);
+    #[cfg(target_arch = "aarch64")]
     ioctl_write_ptr!(kvm_arm_vcpu_init, KVMIO, 0xae, kvm_vcpu_init);
     #[cfg(target_arch = "aarch64")]
     ioctl_read!(kvm_arm_preferred_target, KVMIO, 0xaf, kvm_vcpu_init);
@@ -131,7 +133,6 @@ mod ioctl {
     );
     ioctl_readwrite!(kvm_create_device, KVMIO, 0xe0, kvm_create_device);
     ioctl_write_ptr!(kvm_set_device_attr, KVMIO, 0xe1, kvm_device_attr);
-    #[cfg(target_arch = "x86_64")]
     ioctl_write_ptr!(kvm_get_device_attr, KVMIO, 0xe2, kvm_device_attr);
     ioctl_readwrite!(kvm_create_guest_memfd, KVMIO, 0xd4, kvm_create_guest_memfd);
     #[cfg(target_arch = "aarch64")]
@@ -1245,6 +1246,47 @@ impl Partition {
 pub struct Device(File);
 
 impl Device {
+    /// Reads a typed device attribute.
+    ///
+    /// # Safety
+    /// `T` must match the documented type of the attribute.
+    pub unsafe fn get_device_attr<T: Default>(&self, group: u32, attr: u64) -> nix::Result<T> {
+        let mut value = T::default();
+        // SAFETY: the caller supplies the documented attribute type.
+        unsafe {
+            ioctl::kvm_get_device_attr(
+                self.0.as_raw_fd(),
+                &kvm_device_attr {
+                    group,
+                    attr,
+                    addr: std::ptr::from_mut(&mut value) as u64,
+                    flags: 0,
+                },
+            )?;
+        }
+        Ok(value)
+    }
+
+    /// Writes a typed device attribute with its complete 64-bit selector.
+    ///
+    /// # Safety
+    /// `T` must match the documented type of the attribute.
+    pub unsafe fn set_device_attr64<T>(&self, group: u32, attr: u64, value: &T) -> nix::Result<()> {
+        // SAFETY: the caller supplies the documented attribute type.
+        unsafe {
+            ioctl::kvm_set_device_attr(
+                self.0.as_raw_fd(),
+                &kvm_device_attr {
+                    group,
+                    attr,
+                    addr: std::ptr::from_ref(value) as u64,
+                    flags: 0,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     /// # Safety
     ///
     /// `addr` must point to the appropriate input for the attribute being
@@ -1409,6 +1451,74 @@ impl<'a> Processor<'a> {
             ioctl::kvm_interrupt(self.get().vcpu.as_raw_fd(), &kvm_interrupt { irq: vector })
                 .map_err(Error::Interrupt)?;
         };
+        Ok(())
+    }
+
+    /// Returns the complete bounded list of ARM one-register IDs.
+    #[cfg(target_arch = "aarch64")]
+    pub fn register_ids(&self) -> Result<Vec<u64>> {
+        #[repr(C)]
+        struct RegisterList {
+            count: u64,
+            ids: [u64; 4096],
+        }
+        let mut list = RegisterList {
+            count: 4096,
+            ids: [0; 4096],
+        };
+        // SAFETY: the header and trailing array match kvm_reg_list, with the
+        // exact allocated capacity supplied to the kernel.
+        unsafe {
+            ioctl::kvm_get_reg_list(
+                self.get().vcpu.as_raw_fd(),
+                std::ptr::from_mut(&mut list).cast(),
+            )
+            .map_err(Error::GetRegs)?;
+        }
+        let count = usize::try_from(list.count)
+            .ok()
+            .filter(|&n| n <= list.ids.len())
+            .ok_or(Error::GetRegs(nix::errno::Errno::EOVERFLOW))?;
+        Ok(list.ids[..count].to_vec())
+    }
+
+    /// Reads an ARM register using the size encoded by KVM, including SIMD.
+    #[cfg(target_arch = "aarch64")]
+    pub fn register_bytes(&self, id: u64) -> Result<Vec<u8>> {
+        let size = 1usize
+            .checked_shl(((id >> 52) & 15) as u32)
+            .filter(|&size| size <= 2048)
+            .ok_or(Error::GetRegs(nix::errno::Errno::EINVAL))?;
+        let mut bytes = vec![0; size];
+        let reg = kvm_one_reg {
+            id,
+            addr: bytes.as_mut_ptr() as u64,
+        };
+        // SAFETY: the buffer has exactly the encoded register size.
+        unsafe {
+            ioctl::kvm_get_reg(self.get().vcpu.as_raw_fd(), &reg).map_err(Error::GetRegs)?;
+        }
+        Ok(bytes)
+    }
+
+    /// Restores an ARM register after validating its encoded buffer size.
+    #[cfg(target_arch = "aarch64")]
+    pub fn set_register_bytes(&self, id: u64, bytes: &[u8]) -> Result<()> {
+        let size = 1usize
+            .checked_shl(((id >> 52) & 15) as u32)
+            .filter(|&size| size <= 2048)
+            .ok_or(Error::SetRegs(nix::errno::Errno::EINVAL))?;
+        if bytes.len() != size {
+            return Err(Error::SetRegs(nix::errno::Errno::EINVAL));
+        }
+        let reg = kvm_one_reg {
+            id,
+            addr: bytes.as_ptr() as u64,
+        };
+        // SAFETY: the buffer has exactly the encoded register size.
+        unsafe {
+            ioctl::kvm_set_reg(self.get().vcpu.as_raw_fd(), &reg).map_err(Error::SetRegs)?;
+        }
         Ok(())
     }
 

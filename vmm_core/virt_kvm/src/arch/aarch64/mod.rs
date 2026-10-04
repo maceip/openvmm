@@ -23,7 +23,7 @@ use aarch64defs::SystemReg;
 use aarch64defs::Vendor;
 use aarch64defs::gic::GicV2mRegister;
 use bitfield_struct::bitfield;
-use core::panic;
+mod snapshot;
 use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -466,25 +466,32 @@ impl virt::vp::AccessVpState for &'_ mut KvmProcessor<'_> {
 }
 
 impl virt::vm::AccessVmState for &KvmPartition {
+    fn native(&mut self) -> Result<virt::aarch64::vm::NativeState, Self::Error> {
+        snapshot::save(&self.inner)
+    }
+    fn set_native(&mut self, value: &virt::aarch64::vm::NativeState) -> Result<(), Self::Error> {
+        snapshot::restore(&self.inner, value)
+    }
+
     type Error = KvmError;
 
     fn caps(&self) -> &PartitionCapabilities {
-        unimplemented!()
+        &self.inner.caps
     }
 
     fn commit(&mut self) -> Result<(), Self::Error> {
-        unimplemented!()
+        Ok(())
     }
 
     fn distributor(&mut self) -> Result<virt::aarch64::SavedDistributorState, Self::Error> {
-        unimplemented!()
+        Err(KvmError::NotSupported)
     }
 
     fn set_distributor(
         &mut self,
         _value: &virt::aarch64::SavedDistributorState,
     ) -> Result<(), Self::Error> {
-        unimplemented!()
+        Err(KvmError::NotSupported)
     }
 }
 
@@ -497,9 +504,12 @@ impl virt::Processor for KvmProcessor<'_> {
     fn set_debug_state(
         &mut self,
         _vtl: Vtl,
-        _state: Option<&DebugState>,
+        state: Option<&DebugState>,
     ) -> Result<(), <&mut Self as virt::vp::AccessVpState>::Error> {
-        unimplemented!()
+        if state.is_some() {
+            return Err(KvmError::NotSupported);
+        }
+        Ok(())
     }
 
     async fn run_vp(
@@ -577,7 +587,10 @@ impl virt::Processor for KvmProcessor<'_> {
                             }
                         }
                     }
-                    _ => panic!("unhandled exit: {:?}", exit),
+                    _ => {
+                        return Err(dev
+                            .fatal_error(KvmError::InvalidState("unhandled ARM KVM exit").into()));
+                    }
                 }
             }
         }
@@ -888,6 +901,7 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                 // GIC state save/restore is not implemented for this backend.
                 gic_max_spis: 0,
                 virtual_timer_save: false,
+                native_state_save: true,
                 extended_system_registers_save: false,
             }
         };

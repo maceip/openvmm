@@ -9733,6 +9733,7 @@ dependencies = [
  "kvm",
  "libc",
  "memory_range",
+ "mesh_protobuf",
  "open_enum",
  "pal_event",
  "parking_lot",

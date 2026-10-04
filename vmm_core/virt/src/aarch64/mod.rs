@@ -55,6 +55,8 @@ pub struct Aarch64PartitionCapabilities {
     /// `CNTV_CVAL_EL0`) participate in snapshots. Without them a restored
     /// guest loses its timer interrupt and stops making progress.
     pub virtual_timer_save: bool,
+    /// Complete backend-native state is included in the snapshot.
+    pub native_state_save: bool,
     /// Whether the [`vp::ExtendedSystemRegisters`] (`SPSR_EL1`, the `TPIDR`
     /// thread registers, the `AP*KEY` pointer-authentication keys, and
     /// `FPCR`/`FPSR`) participate in snapshots. These change at runtime
