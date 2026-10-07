@@ -202,10 +202,11 @@ snapshots, reject a restore target. This is not a post-readiness hotplug API and
 cannot add VPs absent from the saved topology.
 
 ```admonish warning
-Versions 3 through 5 do not contain or validate embedded checksums for
-`state.bin` or `memory.bin`. Restore still requires regular files, bounded
-manifest and state decoding, exact artifact lengths, and a compatible machine
-contract, but same-length payload changes are not detected. Paired
+Version 6 stores and validates SHA-256 digests of `state.bin` and `memory.bin`.
+Versions 3 through 5 do not contain or validate those checksums. Restore still
+requires regular files, bounded manifest and state decoding, exact artifact
+lengths, and a compatible machine contract. On versions 3 through 5,
+same-length payload changes are not detected. Paired
 `scratch.img` does have an exact length and SHA-256 identity because it must
 match captured guest filesystem state. Protect snapshot directories with host
 access controls. Integrity or authentication for export and transport must be

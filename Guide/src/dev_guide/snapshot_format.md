@@ -23,19 +23,21 @@ The manifest is a protobuf message defined as
 in `openvmm/openvmm_helpers/src/snapshot.rs`, encoded using the `mesh`
 crate's protobuf encoding.
 
-New snapshots use manifest version 5. The legacy `state_sha256` and
+New snapshots use manifest version 6. The legacy `state_sha256` and
 `memory_sha256` protobuf tags remain reserved so version 2 manifests can be
-decoded; versions 3 through 5 require both fields to be absent. Restore accepts
-versions 2 through 4 for compatibility. Tiered microVM snapshots require version
-5, which records capture tier, clone/resume policy, and consumed configuration
-sections.
+decoded; versions 3 through 5 require both fields to be absent, and version 6
+requires both and re-hashes `state.bin` and `memory.bin` on restore. Restore
+accepts versions 2 through 6. Tiered microVM snapshots require version 5 or 6,
+which record capture tier, clone/resume policy, and consumed configuration
+sections. New captures write version 6.
 
 The default format is a local machine-state contract, not an authenticated
 container. All versions receive the same regular-file, no-follow/no-reparse,
-bounded decoding, exact-length, inventory, and machine-contract validation,
-but the on-disk format does not authenticate same-length payload changes.
-Versions 4 and 5 record the SHA-256 and exact length of `scratch.img`, because guest
-RAM and a mounted writable filesystem must be restored as one exact pair.
+bounded decoding, exact-length, inventory, and machine-contract validation.
+Versions 3 through 5 do not authenticate same-length changes to `state.bin` or
+`memory.bin`. Version 6 does. Versions 4 through 6 record the SHA-256 and exact
+length of `scratch.img`, because guest RAM and a mounted writable filesystem
+must be restored as one exact pair.
 Export or transport layers must provide broader integrity and authentication
 outside this format.
 
