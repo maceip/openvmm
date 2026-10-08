@@ -1,0 +1,70 @@
+name: NVX fork CI
+
+on:
+  push:
+    branches:
+      - nvx-macos
+
+permissions:
+  contents: read
+
+jobs:
+  macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      PROTOC: /opt/homebrew/bin/protoc
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: brew install protobuf
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          rustup default 1.95.0
+      - name: Check formatting
+        run: cargo fmt -p openvmm -- --check
+      - name: Check OpenVMM
+        run: cargo check --locked -p openvmm --target aarch64-apple-darwin
+      - name: Test OpenVMM core
+        run: cargo test --locked -p openvmm_core --lib --target aarch64-apple-darwin
+      - name: Build native OpenVMM
+        run: cargo build --release --locked -p openvmm --target aarch64-apple-darwin
+      - name: Package executable and checksums
+        run: |
+          set -euo pipefail
+          mkdir -p dist/package
+          cp target/aarch64-apple-darwin/release/openvmm dist/package/openvmm
+          codesign --force --sign - --entitlements build_support/macos/entitlements.xml dist/package/openvmm
+          printf '%s\n' "$GITHUB_SHA" > dist/package/SOURCE_REVISION
+          (cd dist/package && shasum -a 256 openvmm > SHA256SUMS && shasum -a 256 -c SHA256SUMS)
+          archive="openvmm-aarch64-apple-darwin-${GITHUB_SHA}.tar.gz"
+          tar -czf "dist/$archive" -C dist/package openvmm SOURCE_REVISION SHA256SUMS
+          (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
+      - name: Attest packaged build
+        id: attest
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/openvmm-aarch64-apple-darwin-${{ github.sha }}.tar.gz
+      - name: Upload build archive and digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: openvmm-aarch64-apple-darwin-${{ github.sha }}
+          path: |
+            dist/openvmm-aarch64-apple-darwin-${{ github.sha }}.tar.gz
+            dist/openvmm-aarch64-apple-darwin-${{ github.sha }}.tar.gz.sha256
+          if-no-files-found: error
+      - name: Upload attestation bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: openvmm-attestation-${{ github.sha }}
+          path: ${{ steps.attest.outputs.bundle-path }}
+          if-no-files-found: error
